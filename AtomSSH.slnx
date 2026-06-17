@@ -1,0 +1,18 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AtomSSH.Application/AtomSSH.Application.csproj" />
+    <Project Path="src/AtomSSH.Core/AtomSSH.Core.csproj" />
+    <Project Path="src/AtomSSH.Infrastructure/AtomSSH.Infrastructure.csproj" />
+    <Project Path="src/AtomSSH.Network/AtomSSH.Network.csproj" />
+    <Project Path="src/AtomSSH.Session/AtomSSH.Session.csproj" />
+    <Project Path="src/AtomSSH.Transfer/AtomSSH.Transfer.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AtomSSH.Application.Tests/AtomSSH.Application.Tests.csproj" />
+    <Project Path="tests/AtomSSH.Core.Tests/AtomSSH.Core.Tests.csproj" />
+    <Project Path="tests/AtomSSH.Infrastructure.Tests/AtomSSH.Infrastructure.Tests.csproj" />
+    <Project Path="tests/AtomSSH.Network.Tests/AtomSSH.Network.Tests.csproj" />
+    <Project Path="tests/AtomSSH.Session.Tests/AtomSSH.Session.Tests.csproj" />
+    <Project Path="tests/AtomSSH.Transfer.Tests/AtomSSH.Transfer.Tests.csproj" />
+  </Folder>
+</Solution>
