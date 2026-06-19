@@ -43,4 +43,15 @@ public sealed class CoreContractTests
         Assert.Contains("passphrase=<redacted>", redacted);
         Assert.Contains("[redacted-private-key]", redacted);
     }
+
+    [Fact]
+    public void ValueObjectsRejectEmptyValues()
+    {
+        Assert.Throws<ArgumentException>(() => new HostName(""));
+        Assert.Throws<ArgumentException>(() => new RemotePath(" "));
+        Assert.Throws<ArgumentException>(() => new LocalPath(""));
+        Assert.Throws<ArgumentException>(() => new SshProfileId(Guid.Empty));
+        Assert.Throws<ArgumentException>(() => new CredentialRef(Guid.Empty));
+        Assert.Throws<ArgumentException>(() => new TransferTaskId(Guid.Empty));
+    }
 }

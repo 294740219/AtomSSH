@@ -2,6 +2,7 @@ using AtomSSH.Core.Ports;
 using AtomSSH.Core.Results;
 using AtomSSH.Core.Transfers;
 using AtomSSH.Core.ValueObjects;
+using System.Collections.Concurrent;
 
 namespace AtomSSH.Transfer.Scheduling;
 
@@ -10,6 +11,8 @@ public sealed class SftpTransferTaskScheduler : ITransferTaskScheduler
     private readonly ISshProfileRepository _profiles;
     private readonly ISftpFileTransfer _fileTransfer;
     private readonly ITransferStateStore _stateStore;
+    private readonly ConcurrentDictionary<TransferTaskId, CancellationTokenSource> _taskCancellation = new();
+    private readonly SemaphoreSlim _workerSlots = new(4, 4);
 
     public SftpTransferTaskScheduler(
         ISshProfileRepository profiles,
@@ -22,6 +25,101 @@ public sealed class SftpTransferTaskScheduler : ITransferTaskScheduler
     }
 
     public async Task<OperationResult> SubmitAsync(
+        SftpTransferTask task,
+        TransferExecutionPlan executionPlan,
+        CancellationToken cancellationToken)
+    {
+        return await RunScheduledAsync(
+            task.Id,
+            token => ExecuteSftpTransferAsync(task, executionPlan, token),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<OperationResult> SubmitAsync(
+        RemoteCopyTask task,
+        TransferExecutionPlan executionPlan,
+        CancellationToken cancellationToken)
+    {
+        return await RunScheduledAsync(
+            task.Id,
+            token => ExecuteRemoteCopyAsync(task, executionPlan, token),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<OperationResult> RetryAsync(
+        SftpTransferTask task,
+        TransferExecutionPlan executionPlan,
+        CancellationToken cancellationToken)
+    {
+        return SubmitAsync(task, executionPlan, cancellationToken);
+    }
+
+    public Task<OperationResult> RetryAsync(
+        RemoteCopyTask task,
+        TransferExecutionPlan executionPlan,
+        CancellationToken cancellationToken)
+    {
+        return SubmitAsync(task, executionPlan, cancellationToken);
+    }
+
+    public async Task<OperationResult> CancelAsync(TransferTaskId taskId, CancellationToken cancellationToken)
+    {
+        if (!_taskCancellation.TryGetValue(taskId, out var source))
+        {
+            return OperationResult.Failure(new SshError(
+                SshErrorKind.Validation,
+                "Transfer task is not running and cannot be cancelled.",
+                taskId.Value.ToString()));
+        }
+
+        await source.CancelAsync().ConfigureAwait(false);
+        return await SaveProgressAsync(taskId, 0, null, TransferStatus.Cancelled, null, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<OperationResult> RunScheduledAsync(
+        TransferTaskId taskId,
+        Func<CancellationToken, Task<OperationResult>> execute,
+        CancellationToken cancellationToken)
+    {
+        using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (!_taskCancellation.TryAdd(taskId, linkedSource))
+        {
+            return OperationResult.Failure(new SshError(
+                SshErrorKind.Validation,
+                "Transfer task is already scheduled.",
+                taskId.Value.ToString()));
+        }
+
+        try
+        {
+            await _workerSlots.WaitAsync(linkedSource.Token).ConfigureAwait(false);
+            try
+            {
+                return await execute(linkedSource.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _workerSlots.Release();
+            }
+        }
+        catch (OperationCanceledException exception)
+        {
+            var error = new SshError(
+                SshErrorKind.Cancelled,
+                "Transfer task was cancelled before execution completed.",
+                SshErrorRedactor.RedactDetail(exception.Message));
+            await SaveProgressAsync(taskId, 0, null, TransferStatus.Cancelled, error, CancellationToken.None)
+                .ConfigureAwait(false);
+            return OperationResult.Failure(error);
+        }
+        finally
+        {
+            _taskCancellation.TryRemove(taskId, out _);
+        }
+    }
+
+    private async Task<OperationResult> ExecuteSftpTransferAsync(
         SftpTransferTask task,
         TransferExecutionPlan executionPlan,
         CancellationToken cancellationToken)
@@ -111,7 +209,7 @@ public sealed class SftpTransferTaskScheduler : ITransferTaskScheduler
             cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<OperationResult> SubmitAsync(
+    private async Task<OperationResult> ExecuteRemoteCopyAsync(
         RemoteCopyTask task,
         TransferExecutionPlan executionPlan,
         CancellationToken cancellationToken)
@@ -229,11 +327,6 @@ public sealed class SftpTransferTaskScheduler : ITransferTaskScheduler
                     SshErrorRedactor.RedactDetail(exception.Message)),
                 cancellationToken).ConfigureAwait(false);
         }
-    }
-
-    public Task<OperationResult> CancelAsync(TransferTaskId taskId, CancellationToken cancellationToken)
-    {
-        return SaveProgressAsync(taskId, 0, null, TransferStatus.Cancelled, null, cancellationToken);
     }
 
     private async Task<OperationResult> SaveProgressAsync(

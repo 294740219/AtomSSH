@@ -30,6 +30,22 @@ public sealed class FakeTransferTaskScheduler : ITransferTaskScheduler
         return SaveSucceededProgressAsync(task.Id, cancellationToken);
     }
 
+    public Task<OperationResult> RetryAsync(
+        SftpTransferTask task,
+        TransferExecutionPlan executionPlan,
+        CancellationToken cancellationToken)
+    {
+        return SubmitAsync(task, executionPlan, cancellationToken);
+    }
+
+    public Task<OperationResult> RetryAsync(
+        RemoteCopyTask task,
+        TransferExecutionPlan executionPlan,
+        CancellationToken cancellationToken)
+    {
+        return SubmitAsync(task, executionPlan, cancellationToken);
+    }
+
     public async Task<OperationResult> CancelAsync(TransferTaskId taskId, CancellationToken cancellationToken)
     {
         var progress = new TransferProgress(taskId, 0, null, null, TransferStatus.Cancelled);

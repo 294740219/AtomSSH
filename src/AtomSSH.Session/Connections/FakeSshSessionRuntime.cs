@@ -42,6 +42,29 @@ public sealed class FakeSshSessionRuntime : ISshSessionRuntime, ISshSessionFacto
                 sessionId.Value.ToString())));
     }
 
+    public Task<OperationResult<SshSessionSnapshot>> GetSnapshotAsync(
+        SshSessionInstanceId sessionId,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult(_sessions.TryGetValue(sessionId, out var state)
+            ? OperationResult<SshSessionSnapshot>.Success(new SshSessionSnapshot(
+                sessionId,
+                state.ProfileId,
+                SshSessionState.Connected))
+            : OperationResult<SshSessionSnapshot>.Failure(new SshError(
+                SshErrorKind.Validation,
+                "SSH session was not found.",
+                sessionId.Value.ToString())));
+    }
+
+    public Task<OperationResult<IReadOnlyList<SshSessionSnapshot>>> ListSnapshotsAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<SshSessionSnapshot> snapshots = _sessions
+            .Select(pair => new SshSessionSnapshot(pair.Key, pair.Value.ProfileId, SshSessionState.Connected))
+            .ToArray();
+        return Task.FromResult(OperationResult<IReadOnlyList<SshSessionSnapshot>>.Success(snapshots));
+    }
+
     public Task<OperationResult> CloseAsync(SshSessionInstanceId sessionId, CancellationToken cancellationToken)
     {
         _sessions.TryRemove(sessionId, out _);

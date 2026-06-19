@@ -219,6 +219,139 @@ public sealed class LocalImportExportService : IImportExportService
         return OperationResult<IReadOnlyList<ImportConflict>>.Success(conflicts);
     }
 
+    public async Task<OperationResult<ImportResult>> ImportAsync(
+        ImportExportPackage package,
+        ImportOptions options,
+        CancellationToken cancellationToken)
+    {
+        var preview = await PreviewImportAsync(package, cancellationToken).ConfigureAwait(false);
+        if (!preview.Succeeded)
+        {
+            return OperationResult<ImportResult>.Failure(preview.Error!);
+        }
+
+        var conflicts = preview.Value!;
+        if (conflicts.Any(conflict => conflict.Kind == ImportConflictKind.UnsupportedVersion))
+        {
+            return OperationResult<ImportResult>.Success(new ImportResult(conflicts, 0));
+        }
+
+        if (conflicts.Count > 0 && options.ConflictResolution == ImportConflictResolution.FailOnConflict)
+        {
+            return OperationResult<ImportResult>.Success(new ImportResult(conflicts, 0));
+        }
+
+        var importedSections = 0;
+
+        var profiles = DeserializeSection<IReadOnlyList<SshProfile>>(package, ProfilesSection);
+        if (!profiles.Succeeded)
+        {
+            return OperationResult<ImportResult>.Failure(profiles.Error!);
+        }
+
+        if (profiles.Value is not null)
+        {
+            foreach (var profile in profiles.Value)
+            {
+                var save = await _profiles.SaveAsync(profile, cancellationToken).ConfigureAwait(false);
+                if (!save.Succeeded)
+                {
+                    return OperationResult<ImportResult>.Failure(save.Error!);
+                }
+            }
+
+            importedSections++;
+        }
+
+        var settings = DeserializeSection<ApplicationSettings>(package, SettingsSection);
+        if (!settings.Succeeded)
+        {
+            return OperationResult<ImportResult>.Failure(settings.Error!);
+        }
+
+        if (settings.Value is not null)
+        {
+            var save = await _settings.SaveAsync(settings.Value, cancellationToken).ConfigureAwait(false);
+            if (!save.Succeeded)
+            {
+                return OperationResult<ImportResult>.Failure(save.Error!);
+            }
+
+            importedSections++;
+        }
+
+        var inventory = DeserializeSection<NetworkInventoryExport>(package, NetworkInventorySection);
+        if (!inventory.Succeeded)
+        {
+            return OperationResult<ImportResult>.Failure(inventory.Error!);
+        }
+
+        if (inventory.Value is not null)
+        {
+            foreach (var space in inventory.Value.Spaces)
+            {
+                var save = await _networkInventory.SaveSpaceAsync(space, cancellationToken).ConfigureAwait(false);
+                if (!save.Succeeded)
+                {
+                    return OperationResult<ImportResult>.Failure(save.Error!);
+                }
+            }
+
+            foreach (var node in inventory.Value.Nodes)
+            {
+                var save = await _networkInventory.SaveNodeAsync(node, cancellationToken).ConfigureAwait(false);
+                if (!save.Succeeded)
+                {
+                    return OperationResult<ImportResult>.Failure(save.Error!);
+                }
+            }
+
+            importedSections++;
+        }
+
+        var snippets = DeserializeSection<IReadOnlyList<CommandSnippet>>(package, CommandSnippetsSection);
+        if (!snippets.Succeeded)
+        {
+            return OperationResult<ImportResult>.Failure(snippets.Error!);
+        }
+
+        if (snippets.Value is not null)
+        {
+            foreach (var snippet in snippets.Value)
+            {
+                var save = await _snippets.SaveAsync(snippet, cancellationToken).ConfigureAwait(false);
+                if (!save.Succeeded)
+                {
+                    return OperationResult<ImportResult>.Failure(save.Error!);
+                }
+            }
+
+            importedSections++;
+        }
+
+        var portForwards = DeserializeSection<IReadOnlyList<PortForwardProfile>>(package, PortForwardProfilesSection);
+        if (!portForwards.Succeeded)
+        {
+            return OperationResult<ImportResult>.Failure(portForwards.Error!);
+        }
+
+        if (portForwards.Value is not null)
+        {
+            foreach (var profile in portForwards.Value)
+            {
+                var save = await _portForwards.SaveAsync(profile, cancellationToken).ConfigureAwait(false);
+                if (!save.Succeeded)
+                {
+                    return OperationResult<ImportResult>.Failure(save.Error!);
+                }
+            }
+
+            importedSections++;
+        }
+
+        return OperationResult<ImportResult>.Success(new ImportResult(conflicts, importedSections));
+    }
+
     private async Task<OperationResult<NetworkInventoryExport>> ExportNetworkInventoryAsync(CancellationToken cancellationToken)
     {
         var spaces = await _networkInventory.ListSpacesAsync(cancellationToken).ConfigureAwait(false);

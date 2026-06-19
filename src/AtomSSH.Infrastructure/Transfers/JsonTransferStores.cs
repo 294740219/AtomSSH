@@ -15,30 +15,46 @@ public sealed class JsonTransferTaskStore : ITransferTaskStore
         _store = new JsonFileStore<TransferTaskEnvelope>(directory.TransferTasksFile);
     }
 
-    public async Task<OperationResult> SaveAsync(SftpTransferTask task, CancellationToken cancellationToken)
+    public async Task<OperationResult<IReadOnlyList<SftpTransferTask>>> ListSftpAsync(CancellationToken cancellationToken)
     {
         var envelope = await ReadEnvelopeAsync(cancellationToken).ConfigureAwait(false);
-        if (!envelope.Succeeded)
-        {
-            return OperationResult.Failure(envelope.Error!);
-        }
+        return !envelope.Succeeded
+            ? OperationResult<IReadOnlyList<SftpTransferTask>>.Failure(envelope.Error!)
+            : OperationResult<IReadOnlyList<SftpTransferTask>>.Success(envelope.Value!.SftpTasks);
+    }
 
-        envelope.Value!.SftpTasks.RemoveAll(item => item.Id == task.Id);
-        envelope.Value.SftpTasks.Add(task);
-        return await _store.WriteAsync(envelope.Value, cancellationToken).ConfigureAwait(false);
+    public async Task<OperationResult<IReadOnlyList<RemoteCopyTask>>> ListRemoteCopyAsync(CancellationToken cancellationToken)
+    {
+        var envelope = await ReadEnvelopeAsync(cancellationToken).ConfigureAwait(false);
+        return !envelope.Succeeded
+            ? OperationResult<IReadOnlyList<RemoteCopyTask>>.Failure(envelope.Error!)
+            : OperationResult<IReadOnlyList<RemoteCopyTask>>.Success(envelope.Value!.RemoteCopyTasks);
+    }
+
+    public async Task<OperationResult> SaveAsync(SftpTransferTask task, CancellationToken cancellationToken)
+    {
+        return await _store.UpdateAsync(
+            new TransferTaskEnvelope(),
+            envelope =>
+            {
+                envelope.SftpTasks.RemoveAll(item => item.Id == task.Id);
+                envelope.SftpTasks.Add(task);
+                return OperationResult<TransferTaskEnvelope>.Success(envelope);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<OperationResult> SaveAsync(RemoteCopyTask task, CancellationToken cancellationToken)
     {
-        var envelope = await ReadEnvelopeAsync(cancellationToken).ConfigureAwait(false);
-        if (!envelope.Succeeded)
-        {
-            return OperationResult.Failure(envelope.Error!);
-        }
-
-        envelope.Value!.RemoteCopyTasks.RemoveAll(item => item.Id == task.Id);
-        envelope.Value.RemoteCopyTasks.Add(task);
-        return await _store.WriteAsync(envelope.Value, cancellationToken).ConfigureAwait(false);
+        return await _store.UpdateAsync(
+            new TransferTaskEnvelope(),
+            envelope =>
+            {
+                envelope.RemoteCopyTasks.RemoveAll(item => item.Id == task.Id);
+                envelope.RemoteCopyTasks.Add(task);
+                return OperationResult<TransferTaskEnvelope>.Success(envelope);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     private Task<OperationResult<TransferTaskEnvelope>> ReadEnvelopeAsync(CancellationToken cancellationToken)
@@ -66,15 +82,15 @@ public sealed class JsonTransferStateStore : ITransferStateStore
 
     public async Task<OperationResult> SaveAsync(TransferProgress progress, CancellationToken cancellationToken)
     {
-        var list = await _store.ReadAsync(new List<TransferProgress>(), cancellationToken).ConfigureAwait(false);
-        if (!list.Succeeded)
-        {
-            return OperationResult.Failure(list.Error!);
-        }
-
-        list.Value!.RemoveAll(item => item.TaskId == progress.TaskId);
-        list.Value.Add(progress);
-        return await _store.WriteAsync(list.Value, cancellationToken).ConfigureAwait(false);
+        return await _store.UpdateAsync(
+            new List<TransferProgress>(),
+            list =>
+            {
+                list.RemoveAll(item => item.TaskId == progress.TaskId);
+                list.Add(progress);
+                return OperationResult<List<TransferProgress>>.Success(list);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 }
 

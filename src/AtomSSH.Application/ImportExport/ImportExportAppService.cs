@@ -24,4 +24,12 @@ public sealed class ImportExportAppService
     {
         return _importExport.PreviewImportAsync(package, cancellationToken);
     }
+
+    public Task<OperationResult<ImportResult>> ImportAsync(
+        ImportExportPackage package,
+        ImportOptions options,
+        CancellationToken cancellationToken)
+    {
+        return _importExport.ImportAsync(package, options, cancellationToken);
+    }
 }

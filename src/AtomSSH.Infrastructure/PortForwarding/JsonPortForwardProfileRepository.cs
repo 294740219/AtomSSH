@@ -25,14 +25,26 @@ public sealed class JsonPortForwardProfileRepository : IPortForwardProfileReposi
 
     public async Task<OperationResult> SaveAsync(PortForwardProfile profile, CancellationToken cancellationToken)
     {
-        var list = await _store.ReadAsync(new List<PortForwardProfile>(), cancellationToken).ConfigureAwait(false);
-        if (!list.Succeeded)
-        {
-            return OperationResult.Failure(list.Error!);
-        }
+        return await _store.UpdateAsync(
+            new List<PortForwardProfile>(),
+            list =>
+            {
+                list.RemoveAll(item => item.Id == profile.Id);
+                list.Add(profile);
+                return OperationResult<List<PortForwardProfile>>.Success(list);
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
 
-        list.Value!.RemoveAll(item => item.Id == profile.Id);
-        list.Value.Add(profile);
-        return await _store.WriteAsync(list.Value, cancellationToken).ConfigureAwait(false);
+    public async Task<OperationResult> DeleteAsync(Guid id, CancellationToken cancellationToken)
+    {
+        return await _store.UpdateAsync(
+            new List<PortForwardProfile>(),
+            list =>
+            {
+                list.RemoveAll(item => item.Id == id);
+                return OperationResult<List<PortForwardProfile>>.Success(list);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 }

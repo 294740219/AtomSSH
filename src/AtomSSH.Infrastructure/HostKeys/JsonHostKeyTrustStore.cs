@@ -26,16 +26,15 @@ public sealed class JsonHostKeyTrustStore : IHostKeyTrustStore
 
     public async Task<OperationResult> SaveAsync(KnownHostEntry entry, CancellationToken cancellationToken)
     {
-        var entries = await ReadEntriesAsync(cancellationToken).ConfigureAwait(false);
-        if (!entries.Succeeded)
-        {
-            return OperationResult.Failure(entries.Error!);
-        }
-
-        var list = entries.Value!;
-        list.RemoveAll(item => item.Host == entry.Host && item.Port == entry.Port);
-        list.Add(entry);
-        return await _store.WriteAsync(list, cancellationToken).ConfigureAwait(false);
+        return await _store.UpdateAsync(
+            new List<KnownHostEntry>(),
+            list =>
+            {
+                list.RemoveAll(item => item.Host == entry.Host && item.Port == entry.Port);
+                list.Add(entry);
+                return OperationResult<List<KnownHostEntry>>.Success(list);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     private Task<OperationResult<List<KnownHostEntry>>> ReadEntriesAsync(CancellationToken cancellationToken)

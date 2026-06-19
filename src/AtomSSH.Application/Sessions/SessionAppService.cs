@@ -1,6 +1,8 @@
 using AtomSSH.Application.Common;
+using AtomSSH.Core.Network;
 using AtomSSH.Core.Ports;
 using AtomSSH.Core.Results;
+using AtomSSH.Core.Terminal;
 using AtomSSH.Core.ValueObjects;
 
 namespace AtomSSH.Application.Sessions;
@@ -32,7 +34,8 @@ public sealed class SessionAppService
                 profile.Error ?? ApplicationErrors.NotFound("SSH profile was not found.", profileId.Value.ToString()));
         }
 
-        var route = await _routePlanner.PlanAsync(profile.Value, cancellationToken).ConfigureAwait(false);
+        var route = await _routePlanner.PlanAsync(new ConnectionRoutePlanningRequest(profile.Value), cancellationToken)
+            .ConfigureAwait(false);
         if (!route.Succeeded || route.Value is null)
         {
             return OperationResult<SshSessionInstanceId>.Failure(route.Error!);
@@ -45,5 +48,17 @@ public sealed class SessionAppService
     public Task<OperationResult> CloseAsync(SshSessionInstanceId sessionId, CancellationToken cancellationToken)
     {
         return _sessionRuntime.CloseAsync(sessionId, cancellationToken);
+    }
+
+    public Task<OperationResult<SshSessionSnapshot>> GetSnapshotAsync(
+        SshSessionInstanceId sessionId,
+        CancellationToken cancellationToken)
+    {
+        return _sessionRuntime.GetSnapshotAsync(sessionId, cancellationToken);
+    }
+
+    public Task<OperationResult<IReadOnlyList<SshSessionSnapshot>>> ListSnapshotsAsync(CancellationToken cancellationToken)
+    {
+        return _sessionRuntime.ListSnapshotsAsync(cancellationToken);
     }
 }

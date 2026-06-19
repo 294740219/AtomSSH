@@ -23,15 +23,15 @@ public sealed class LocalCredentialStore : ICredentialStore, ICredentialResolver
 
     public async Task<OperationResult> SaveAsync(CredentialMetadata metadata, CancellationToken cancellationToken)
     {
-        var list = await _metadataStore.ReadAsync(new List<CredentialMetadata>(), cancellationToken).ConfigureAwait(false);
-        if (!list.Succeeded)
-        {
-            return OperationResult.Failure(list.Error!);
-        }
-
-        list.Value!.RemoveAll(item => item.Ref == metadata.Ref);
-        list.Value.Add(metadata);
-        return await _metadataStore.WriteAsync(list.Value, cancellationToken).ConfigureAwait(false);
+        return await _metadataStore.UpdateAsync(
+            new List<CredentialMetadata>(),
+            list =>
+            {
+                list.RemoveAll(item => item.Ref == metadata.Ref);
+                list.Add(metadata);
+                return OperationResult<List<CredentialMetadata>>.Success(list);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<OperationResult> SaveAsync(
@@ -47,13 +47,13 @@ public sealed class LocalCredentialStore : ICredentialStore, ICredentialResolver
                 $"metadata={metadata.Kind}; material={material.Kind}"));
         }
 
-        var saveMetadata = await SaveAsync(metadata, cancellationToken).ConfigureAwait(false);
-        if (!saveMetadata.Succeeded)
+        var payload = ToSecretPayload(material);
+        if (!payload.Succeeded || payload.Value is null)
         {
-            return saveMetadata;
+            return OperationResult.Failure(payload.Error!);
         }
 
-        var plaintext = JsonSerializer.SerializeToUtf8Bytes(ToSecretPayload(material));
+        var plaintext = JsonSerializer.SerializeToUtf8Bytes(payload.Value);
         var protectedData = _protector.Protect(plaintext);
         CryptographicOperations.ZeroMemory(plaintext);
         if (!protectedData.Succeeded || protectedData.Value is null)
@@ -61,47 +61,51 @@ public sealed class LocalCredentialStore : ICredentialStore, ICredentialResolver
             return OperationResult.Failure(protectedData.Error!);
         }
 
-        var secrets = await _secretStore.ReadAsync(new List<EncryptedCredentialSecret>(), cancellationToken)
-            .ConfigureAwait(false);
-        if (!secrets.Succeeded)
+        var protectedPayload = Convert.ToBase64String(protectedData.Value);
+        var saveSecret = await _secretStore.UpdateAsync(
+            new List<EncryptedCredentialSecret>(),
+            secrets =>
+            {
+                secrets.RemoveAll(item => item.Ref == metadata.Ref);
+                secrets.Add(new EncryptedCredentialSecret(
+                    metadata.Ref,
+                    metadata.Kind,
+                    protectedPayload,
+                    DateTimeOffset.UtcNow));
+                return OperationResult<List<EncryptedCredentialSecret>>.Success(secrets);
+            },
+            cancellationToken).ConfigureAwait(false);
+        if (!saveSecret.Succeeded)
         {
-            return OperationResult.Failure(secrets.Error!);
+            return saveSecret;
         }
 
-        secrets.Value!.RemoveAll(item => item.Ref == metadata.Ref);
-        secrets.Value.Add(new EncryptedCredentialSecret(
-            metadata.Ref,
-            metadata.Kind,
-            Convert.ToBase64String(protectedData.Value),
-            DateTimeOffset.UtcNow));
-
-        return await _secretStore.WriteAsync(secrets.Value, cancellationToken).ConfigureAwait(false);
+        return await SaveAsync(metadata, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<OperationResult> DeleteAsync(CredentialRef credentialRef, CancellationToken cancellationToken)
     {
-        var list = await _metadataStore.ReadAsync(new List<CredentialMetadata>(), cancellationToken).ConfigureAwait(false);
-        if (!list.Succeeded)
-        {
-            return OperationResult.Failure(list.Error!);
-        }
-
-        list.Value!.RemoveAll(item => item.Ref == credentialRef);
-        var saveMetadata = await _metadataStore.WriteAsync(list.Value, cancellationToken).ConfigureAwait(false);
+        var saveMetadata = await _metadataStore.UpdateAsync(
+            new List<CredentialMetadata>(),
+            list =>
+            {
+                list.RemoveAll(item => item.Ref == credentialRef);
+                return OperationResult<List<CredentialMetadata>>.Success(list);
+            },
+            cancellationToken).ConfigureAwait(false);
         if (!saveMetadata.Succeeded)
         {
             return saveMetadata;
         }
 
-        var secrets = await _secretStore.ReadAsync(new List<EncryptedCredentialSecret>(), cancellationToken)
-            .ConfigureAwait(false);
-        if (!secrets.Succeeded)
-        {
-            return OperationResult.Failure(secrets.Error!);
-        }
-
-        secrets.Value!.RemoveAll(item => item.Ref == credentialRef);
-        return await _secretStore.WriteAsync(secrets.Value, cancellationToken).ConfigureAwait(false);
+        return await _secretStore.UpdateAsync(
+            new List<EncryptedCredentialSecret>(),
+            secrets =>
+            {
+                secrets.RemoveAll(item => item.Ref == credentialRef);
+                return OperationResult<List<EncryptedCredentialSecret>>.Success(secrets);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<OperationResult<CredentialLease>> ResolveAsync(
@@ -177,31 +181,38 @@ public sealed class LocalCredentialStore : ICredentialStore, ICredentialResolver
         }
     }
 
-    private static CredentialSecretPayload ToSecretPayload(CredentialMaterial material)
+    private static OperationResult<CredentialSecretPayload> ToSecretPayload(CredentialMaterial material)
     {
         return material switch
         {
-            PasswordCredentialMaterial password => new CredentialSecretPayload(
+            PasswordCredentialMaterial password => OperationResult<CredentialSecretPayload>.Success(new CredentialSecretPayload(
                 CredentialKind.Password,
                 password.Password,
                 null,
-                null),
-            PrivateKeyCredentialMaterial privateKey => new CredentialSecretPayload(
+                null)),
+            PrivateKeyCredentialMaterial privateKey => OperationResult<CredentialSecretPayload>.Success(new CredentialSecretPayload(
                 privateKey.Kind,
                 null,
                 privateKey.PrivateKeyPem,
-                privateKey.Passphrase),
-            KeyboardInteractiveCredentialMaterial => new CredentialSecretPayload(
+                privateKey.Passphrase)),
+            KeyboardInteractiveCredentialMaterial keyboard => OperationResult<CredentialSecretPayload>.Success(new CredentialSecretPayload(
                 CredentialKind.KeyboardInteractive,
                 null,
                 null,
-                null),
-            AgentCredentialMaterial => new CredentialSecretPayload(
+                null,
+                keyboard.Responses.ToDictionary(pair => pair.Key, pair => pair.Value),
+                keyboard.DefaultResponse)),
+            AgentCredentialMaterial => OperationResult<CredentialSecretPayload>.Success(new CredentialSecretPayload(
                 CredentialKind.Agent,
                 null,
                 null,
-                null),
-            _ => throw new InvalidOperationException("Unsupported credential material.")
+                null,
+                null,
+                null)),
+            _ => OperationResult<CredentialSecretPayload>.Failure(new SshError(
+                SshErrorKind.Validation,
+                "Unsupported credential material.",
+                material.Kind.ToString()))
         };
     }
 
@@ -218,7 +229,9 @@ public sealed class LocalCredentialStore : ICredentialStore, ICredentialResolver
                     payload.PrivateKeyPem,
                     payload.Passphrase)),
             CredentialKind.KeyboardInteractive =>
-                OperationResult<CredentialMaterial>.Success(new KeyboardInteractiveCredentialMaterial()),
+                OperationResult<CredentialMaterial>.Success(new KeyboardInteractiveCredentialMaterial(
+                    payload.KeyboardInteractiveResponses ?? new Dictionary<string, string>(),
+                    payload.KeyboardInteractiveDefaultResponse)),
             CredentialKind.Agent =>
                 OperationResult<CredentialMaterial>.Success(new AgentCredentialMaterial()),
             _ => OperationResult<CredentialMaterial>.Failure(new SshError(
@@ -239,4 +252,6 @@ public sealed record CredentialSecretPayload(
     CredentialKind Kind,
     string? Password,
     string? PrivateKeyPem,
-    string? Passphrase);
+    string? Passphrase,
+    Dictionary<string, string>? KeyboardInteractiveResponses = null,
+    string? KeyboardInteractiveDefaultResponse = null);

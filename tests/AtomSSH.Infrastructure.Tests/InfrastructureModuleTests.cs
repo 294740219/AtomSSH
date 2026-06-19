@@ -96,6 +96,25 @@ public sealed class InfrastructureModuleTests : IDisposable
     }
 
     [Fact]
+    public async Task JsonSshProfileRepositorySerializesConcurrentWritersAcrossInstances()
+    {
+        var directory = CreateDirectory();
+        var firstRepository = new JsonSshProfileRepository(directory);
+        var secondRepository = new JsonSshProfileRepository(directory);
+        var first = CreateProfile(CredentialRef.New()) with { Name = "first" };
+        var second = CreateProfile(CredentialRef.New()) with { Name = "second" };
+
+        var results = await Task.WhenAll(
+            firstRepository.SaveAsync(first, CancellationToken.None),
+            secondRepository.SaveAsync(second, CancellationToken.None));
+        var list = await firstRepository.ListAsync(CancellationToken.None);
+
+        Assert.All(results, result => Assert.True(result.Succeeded));
+        Assert.Contains(list.Value!, profile => profile.Id == first.Id);
+        Assert.Contains(list.Value!, profile => profile.Id == second.Id);
+    }
+
+    [Fact]
     public async Task LocalCredentialStorePersistsAndResolvesPasswordWithoutPlaintext()
     {
         var directory = CreateDirectory();
@@ -148,6 +167,33 @@ public sealed class InfrastructureModuleTests : IDisposable
     }
 
     [Fact]
+    public async Task LocalCredentialStorePersistsAndResolvesKeyboardInteractiveWithoutPlaintext()
+    {
+        var directory = CreateDirectory();
+        var store = new LocalCredentialStore(directory);
+        var credentialRef = CredentialRef.New();
+        var metadata = new CredentialMetadata(credentialRef, CredentialKind.KeyboardInteractive, "prod-kbi");
+        var material = new KeyboardInteractiveCredentialMaterial(
+            new Dictionary<string, string>
+            {
+                ["Password:"] = "dont-write-me"
+            },
+            "fallback-secret");
+
+        var save = await store.SaveAsync(metadata, material, CancellationToken.None);
+        var resolve = await store.ResolveAsync(credentialRef, CancellationToken.None);
+        var secretJson = await File.ReadAllTextAsync(directory.CredentialSecretsFile);
+
+        Assert.True(save.Succeeded);
+        Assert.True(resolve.Succeeded);
+        var resolved = Assert.IsType<KeyboardInteractiveCredentialMaterial>(resolve.Value!.Material);
+        Assert.Equal("dont-write-me", resolved.Responses["Password:"]);
+        Assert.Equal("fallback-secret", resolved.DefaultResponse);
+        Assert.DoesNotContain("dont-write-me", secretJson);
+        Assert.DoesNotContain("fallback-secret", secretJson);
+    }
+
+    [Fact]
     public async Task JsonNetworkInventoryStorePersistsSpacesAndNodes()
     {
         var directory = CreateDirectory();
@@ -170,6 +216,70 @@ public sealed class InfrastructureModuleTests : IDisposable
         Assert.True(saveNode.Succeeded);
         Assert.Contains(space, spaces.Value!);
         Assert.Contains(node, nodes.Value!);
+    }
+
+    [Fact]
+    public async Task JsonNetworkInventoryStoreDeletesNodesAndSpaces()
+    {
+        var directory = CreateDirectory();
+        var store = new JsonNetworkInventoryStore(directory);
+        var space = new NetworkSpace(Guid.NewGuid(), "prod-vpc");
+        var node = new NetworkNode(
+            NetworkNodeId.New(),
+            space.Id,
+            "app-1",
+            new NetworkAddress("10.0.1.12", 22),
+            SshProfileId.New(),
+            NetworkNodeRole.Target);
+
+        await store.SaveSpaceAsync(space, CancellationToken.None);
+        await store.SaveNodeAsync(node, CancellationToken.None);
+
+        var deleteNode = await store.DeleteNodeAsync(node.Id, CancellationToken.None);
+        var nodesAfterNodeDelete = await store.ListNodesAsync(space.Id, CancellationToken.None);
+        var deleteSpace = await store.DeleteSpaceAsync(space.Id, CancellationToken.None);
+        var spacesAfterDelete = await store.ListSpacesAsync(CancellationToken.None);
+
+        Assert.True(deleteNode.Succeeded);
+        Assert.Empty(nodesAfterNodeDelete.Value!);
+        Assert.True(deleteSpace.Succeeded);
+        Assert.DoesNotContain(space, spacesAfterDelete.Value!);
+    }
+
+    [Fact]
+    public async Task JsonCommandSnippetRepositoryDeletesSnippet()
+    {
+        var directory = CreateDirectory();
+        var repository = new JsonCommandSnippetRepository(directory);
+        var snippet = new CommandSnippet(CommandSnippetId.New(), "uptime", "uptime");
+
+        await repository.SaveAsync(snippet, CancellationToken.None);
+        var delete = await repository.DeleteAsync(snippet.Id, CancellationToken.None);
+        var list = await repository.ListAsync(CancellationToken.None);
+
+        Assert.True(delete.Succeeded);
+        Assert.Empty(list.Value!);
+    }
+
+    [Fact]
+    public async Task JsonPortForwardProfileRepositoryDeletesProfile()
+    {
+        var directory = CreateDirectory();
+        var repository = new JsonPortForwardProfileRepository(directory);
+        var profile = new PortForwardProfile(
+            Guid.NewGuid(),
+            "postgres",
+            SshProfileId.New(),
+            PortForwardKind.Local,
+            new PortForwardEndpoint("127.0.0.1", 15432),
+            new PortForwardEndpoint("127.0.0.1", 5432));
+
+        await repository.SaveAsync(profile, CancellationToken.None);
+        var delete = await repository.DeleteAsync(profile.Id, CancellationToken.None);
+        var list = await repository.ListAsync(CancellationToken.None);
+
+        Assert.True(delete.Succeeded);
+        Assert.Empty(list.Value!);
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using AtomSSH.Core.Hosts;
 using AtomSSH.Core.Ports;
 using AtomSSH.Core.Profiles;
@@ -9,6 +10,7 @@ namespace AtomSSH.Session.HostKeys;
 internal sealed class SshNetHostKeyVerifier
 {
     private readonly IHostKeyTrustStore _trustStore;
+    private readonly ConcurrentDictionary<string, OperationResult<KnownHostEntry?>> _preparedEntries = new();
 
     public SshNetHostKeyVerifier(IHostKeyTrustStore trustStore)
     {
@@ -28,21 +30,36 @@ internal sealed class SshNetHostKeyVerifier
         args.CanTrust = true;
     }
 
+    public async Task<OperationResult> PrepareAsync(SshEndpoint endpoint, CancellationToken cancellationToken)
+    {
+        var entry = await _trustStore.FindAsync(endpoint.Host, endpoint.Port, cancellationToken)
+            .ConfigureAwait(false);
+        _preparedEntries[CreateKey(endpoint)] = entry;
+
+        return entry.Succeeded
+            ? OperationResult.Success()
+            : OperationResult.Failure(entry.Error!);
+    }
+
     internal OperationResult Verify(
         SshEndpoint endpoint,
         string keyType,
         HostKeyFingerprint fingerprint)
     {
-        var entryResult = _trustStore.FindAsync(endpoint.Host, endpoint.Port, CancellationToken.None)
-            .GetAwaiter()
-            .GetResult();
-
-        if (!entryResult.Succeeded)
+        if (!_preparedEntries.TryGetValue(CreateKey(endpoint), out var preparedEntry))
         {
-            return OperationResult.Failure(entryResult.Error!);
+            return OperationResult.Failure(new SshError(
+                SshErrorKind.Configuration,
+                "SSH host key verifier was not prepared.",
+                $"{endpoint.Host.Value}:{endpoint.Port}"));
         }
 
-        var entry = entryResult.Value;
+        if (!preparedEntry.Succeeded)
+        {
+            return OperationResult.Failure(preparedEntry.Error!);
+        }
+
+        var entry = preparedEntry.Value;
         if (entry is null)
         {
             return OperationResult.Failure(new SshError(
@@ -70,6 +87,11 @@ internal sealed class SshNetHostKeyVerifier
         }
 
         return OperationResult.Success();
+    }
+
+    private static string CreateKey(SshEndpoint endpoint)
+    {
+        return $"{endpoint.Host.Value}:{endpoint.Port}";
     }
 
     private static HostKeyFingerprint CreateFingerprint(HostKeyEventArgs args)

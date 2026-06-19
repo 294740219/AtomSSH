@@ -1,6 +1,7 @@
 using AtomSSH.Core.CommandSnippets;
 using AtomSSH.Core.Ports;
 using AtomSSH.Core.Results;
+using AtomSSH.Core.ValueObjects;
 using AtomSSH.Infrastructure.Configuration;
 using AtomSSH.Infrastructure.Storage;
 
@@ -25,14 +26,26 @@ public sealed class JsonCommandSnippetRepository : ICommandSnippetRepository
 
     public async Task<OperationResult> SaveAsync(CommandSnippet snippet, CancellationToken cancellationToken)
     {
-        var list = await _store.ReadAsync(new List<CommandSnippet>(), cancellationToken).ConfigureAwait(false);
-        if (!list.Succeeded)
-        {
-            return OperationResult.Failure(list.Error!);
-        }
+        return await _store.UpdateAsync(
+            new List<CommandSnippet>(),
+            list =>
+            {
+                list.RemoveAll(item => item.Id == snippet.Id);
+                list.Add(snippet);
+                return OperationResult<List<CommandSnippet>>.Success(list);
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
 
-        list.Value!.RemoveAll(item => item.Id == snippet.Id);
-        list.Value.Add(snippet);
-        return await _store.WriteAsync(list.Value, cancellationToken).ConfigureAwait(false);
+    public async Task<OperationResult> DeleteAsync(CommandSnippetId id, CancellationToken cancellationToken)
+    {
+        return await _store.UpdateAsync(
+            new List<CommandSnippet>(),
+            list =>
+            {
+                list.RemoveAll(item => item.Id == id);
+                return OperationResult<List<CommandSnippet>>.Success(list);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 }

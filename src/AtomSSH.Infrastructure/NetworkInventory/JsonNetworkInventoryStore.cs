@@ -1,6 +1,7 @@
 using AtomSSH.Core.Network;
 using AtomSSH.Core.Ports;
 using AtomSSH.Core.Results;
+using AtomSSH.Core.ValueObjects;
 using AtomSSH.Infrastructure.Configuration;
 using AtomSSH.Infrastructure.Storage;
 
@@ -34,28 +35,53 @@ public sealed class JsonNetworkInventoryStore : INetworkInventoryStore
 
     public async Task<OperationResult> SaveSpaceAsync(NetworkSpace space, CancellationToken cancellationToken)
     {
-        var envelope = await ReadEnvelopeAsync(cancellationToken).ConfigureAwait(false);
-        if (!envelope.Succeeded || envelope.Value is null)
-        {
-            return OperationResult.Failure(envelope.Error!);
-        }
-
-        envelope.Value.Spaces.RemoveAll(existing => existing.Id == space.Id);
-        envelope.Value.Spaces.Add(space);
-        return await _store.WriteAsync(envelope.Value, cancellationToken).ConfigureAwait(false);
+        return await _store.UpdateAsync(
+            new NetworkInventoryEnvelope(),
+            envelope =>
+            {
+                envelope.Spaces.RemoveAll(existing => existing.Id == space.Id);
+                envelope.Spaces.Add(space);
+                return OperationResult<NetworkInventoryEnvelope>.Success(envelope);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<OperationResult> SaveNodeAsync(NetworkNode node, CancellationToken cancellationToken)
     {
-        var envelope = await ReadEnvelopeAsync(cancellationToken).ConfigureAwait(false);
-        if (!envelope.Succeeded || envelope.Value is null)
-        {
-            return OperationResult.Failure(envelope.Error!);
-        }
+        return await _store.UpdateAsync(
+            new NetworkInventoryEnvelope(),
+            envelope =>
+            {
+                envelope.Nodes.RemoveAll(existing => existing.Id == node.Id);
+                envelope.Nodes.Add(node);
+                return OperationResult<NetworkInventoryEnvelope>.Success(envelope);
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
 
-        envelope.Value.Nodes.RemoveAll(existing => existing.Id == node.Id);
-        envelope.Value.Nodes.Add(node);
-        return await _store.WriteAsync(envelope.Value, cancellationToken).ConfigureAwait(false);
+    public async Task<OperationResult> DeleteSpaceAsync(Guid networkSpaceId, CancellationToken cancellationToken)
+    {
+        return await _store.UpdateAsync(
+            new NetworkInventoryEnvelope(),
+            envelope =>
+            {
+                envelope.Spaces.RemoveAll(existing => existing.Id == networkSpaceId);
+                envelope.Nodes.RemoveAll(existing => existing.NetworkSpaceId == networkSpaceId);
+                return OperationResult<NetworkInventoryEnvelope>.Success(envelope);
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<OperationResult> DeleteNodeAsync(NetworkNodeId nodeId, CancellationToken cancellationToken)
+    {
+        return await _store.UpdateAsync(
+            new NetworkInventoryEnvelope(),
+            envelope =>
+            {
+                envelope.Nodes.RemoveAll(existing => existing.Id == nodeId);
+                return OperationResult<NetworkInventoryEnvelope>.Success(envelope);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     private Task<OperationResult<NetworkInventoryEnvelope>> ReadEnvelopeAsync(CancellationToken cancellationToken)

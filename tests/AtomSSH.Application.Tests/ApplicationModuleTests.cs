@@ -87,6 +87,39 @@ public sealed class ApplicationModuleTests
         Assert.Equal("uptime\n", runtime.Channel.SentText);
     }
 
+    [Fact]
+    public async Task ProfileSaveRejectsAgentAuthenticationUntilAgentIntegrationExists()
+    {
+        var profile = CreateProfile() with
+        {
+            AuthMethod = SshAuthMethod.Agent,
+            CredentialRef = null
+        };
+        var repository = new FakeProfileRepository(profile);
+        var appService = new ProfileAppService(repository);
+
+        var result = await appService.SaveAsync(profile, CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SshErrorKind.Validation, result.Error?.Kind);
+        Assert.Contains("agent", result.Error!.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ProfileSaveRejectsSelfJumpHostReference()
+    {
+        var profile = CreateProfile();
+        profile = profile with { JumpHostProfileId = profile.Id };
+        var repository = new FakeProfileRepository(profile);
+        var appService = new ProfileAppService(repository);
+
+        var result = await appService.SaveAsync(profile, CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SshErrorKind.Validation, result.Error?.Kind);
+        Assert.Contains("itself", result.Error!.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static SshProfile CreateProfile()
     {
         return new SshProfile(
@@ -139,7 +172,9 @@ public sealed class ApplicationModuleTests
             _endpoint = endpoint;
         }
 
-        public Task<OperationResult<ConnectionRoute>> PlanAsync(SshProfile profile, CancellationToken cancellationToken)
+        public Task<OperationResult<ConnectionRoute>> PlanAsync(
+            ConnectionRoutePlanningRequest request,
+            CancellationToken cancellationToken)
         {
             return Task.FromResult(OperationResult<ConnectionRoute>.Success(
                 new ConnectionRoute(ConnectionRouteKind.Direct, _endpoint, Array.Empty<JumpHostRoute>())));
@@ -148,16 +183,33 @@ public sealed class ApplicationModuleTests
 
     private sealed class FakeTransferTaskStore : ITransferTaskStore
     {
+        private readonly List<SftpTransferTask> _sftpTasks = [];
+        private readonly List<RemoteCopyTask> _remoteCopyTasks = [];
+
         public bool SftpTaskSaved { get; private set; }
+
+        public Task<OperationResult<IReadOnlyList<SftpTransferTask>>> ListSftpAsync(CancellationToken cancellationToken)
+        {
+            return Task.FromResult(OperationResult<IReadOnlyList<SftpTransferTask>>.Success(_sftpTasks));
+        }
+
+        public Task<OperationResult<IReadOnlyList<RemoteCopyTask>>> ListRemoteCopyAsync(CancellationToken cancellationToken)
+        {
+            return Task.FromResult(OperationResult<IReadOnlyList<RemoteCopyTask>>.Success(_remoteCopyTasks));
+        }
 
         public Task<OperationResult> SaveAsync(SftpTransferTask task, CancellationToken cancellationToken)
         {
             SftpTaskSaved = true;
+            _sftpTasks.RemoveAll(item => item.Id == task.Id);
+            _sftpTasks.Add(task);
             return Task.FromResult(OperationResult.Success());
         }
 
         public Task<OperationResult> SaveAsync(RemoteCopyTask task, CancellationToken cancellationToken)
         {
+            _remoteCopyTasks.RemoveAll(item => item.Id == task.Id);
+            _remoteCopyTasks.Add(task);
             return Task.FromResult(OperationResult.Success());
         }
     }
@@ -196,6 +248,22 @@ public sealed class ApplicationModuleTests
             return Task.FromResult(OperationResult.Success());
         }
 
+        public Task<OperationResult> RetryAsync(
+            SftpTransferTask task,
+            TransferExecutionPlan executionPlan,
+            CancellationToken cancellationToken)
+        {
+            return SubmitAsync(task, executionPlan, cancellationToken);
+        }
+
+        public Task<OperationResult> RetryAsync(
+            RemoteCopyTask task,
+            TransferExecutionPlan executionPlan,
+            CancellationToken cancellationToken)
+        {
+            return SubmitAsync(task, executionPlan, cancellationToken);
+        }
+
         public Task<OperationResult> CancelAsync(TransferTaskId taskId, CancellationToken cancellationToken)
         {
             return Task.FromResult(OperationResult.Success());
@@ -221,6 +289,11 @@ public sealed class ApplicationModuleTests
         {
             return Task.FromResult(OperationResult.Success());
         }
+
+        public Task<OperationResult> DeleteAsync(CommandSnippetId id, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(OperationResult.Success());
+        }
     }
 
     private sealed class CapturingSessionRuntime : ISshSessionRuntime
@@ -241,6 +314,25 @@ public sealed class ApplicationModuleTests
         {
             Channel.SessionId = sessionId;
             return Task.FromResult(OperationResult<ITerminalChannel>.Success(Channel));
+        }
+
+        public Task<OperationResult<SshSessionSnapshot>> GetSnapshotAsync(
+            SshSessionInstanceId sessionId,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(OperationResult<SshSessionSnapshot>.Success(new SshSessionSnapshot(
+                sessionId,
+                SshProfileId.New(),
+                SshSessionState.Connected)));
+        }
+
+        public Task<OperationResult<IReadOnlyList<SshSessionSnapshot>>> ListSnapshotsAsync(CancellationToken cancellationToken)
+        {
+            IReadOnlyList<SshSessionSnapshot> snapshots =
+            [
+                new SshSessionSnapshot(Channel.SessionId, SshProfileId.New(), SshSessionState.Connected)
+            ];
+            return Task.FromResult(OperationResult<IReadOnlyList<SshSessionSnapshot>>.Success(snapshots));
         }
 
         public Task<OperationResult> CloseAsync(SshSessionInstanceId sessionId, CancellationToken cancellationToken)

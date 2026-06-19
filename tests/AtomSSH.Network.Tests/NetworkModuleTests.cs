@@ -54,7 +54,7 @@ public sealed class NetworkModuleTests
         var profile = CreateProfile("target", "target.internal");
         var planner = new ConnectionRoutePlanner();
 
-        var result = await planner.PlanAsync(profile, CancellationToken.None);
+        var result = await planner.PlanAsync(new ConnectionRoutePlanningRequest(profile), CancellationToken.None);
 
         Assert.True(result.Succeeded);
         Assert.Equal(Core.Network.ConnectionRouteKind.Direct, result.Value!.Kind);
@@ -68,7 +68,7 @@ public sealed class NetworkModuleTests
         var target = CreateProfile("target", "target.internal", jumpHost.Id);
         var planner = new ConnectionRoutePlanner(new StubProfileRepository(jumpHost));
 
-        var result = await planner.PlanAsync(target, CancellationToken.None);
+        var result = await planner.PlanAsync(new ConnectionRoutePlanningRequest(target), CancellationToken.None);
 
         Assert.True(result.Succeeded);
         Assert.Equal(Core.Network.ConnectionRouteKind.JumpHost, result.Value!.Kind);
@@ -103,7 +103,7 @@ public sealed class NetworkModuleTests
             ]);
         var planner = new ConnectionRoutePlanner(new StubProfileRepository(jumpHost, target), inventory);
 
-        var result = await planner.PlanAsync(target, CancellationToken.None);
+        var result = await planner.PlanAsync(new ConnectionRoutePlanningRequest(target), CancellationToken.None);
 
         Assert.True(result.Succeeded);
         Assert.Equal(Core.Network.ConnectionRouteKind.JumpHost, result.Value!.Kind);
@@ -226,6 +226,16 @@ public sealed class NetworkModuleTests
         }
 
         public Task<OperationResult> SaveNodeAsync(NetworkNode node, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(OperationResult.Success());
+        }
+
+        public Task<OperationResult> DeleteSpaceAsync(Guid networkSpaceId, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(OperationResult.Success());
+        }
+
+        public Task<OperationResult> DeleteNodeAsync(NetworkNodeId nodeId, CancellationToken cancellationToken)
         {
             return Task.FromResult(OperationResult.Success());
         }

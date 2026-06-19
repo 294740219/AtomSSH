@@ -26,4 +26,12 @@ public sealed class FakePortForwardRuntime : IPortForwardRuntime
         _instances.TryRemove(instanceId, out _);
         return Task.FromResult(OperationResult.Success());
     }
+
+    public Task<OperationResult<IReadOnlyList<PortForwardStatus>>> ListAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<PortForwardStatus> statuses = _instances
+            .Select(pair => new PortForwardStatus(pair.Key, pair.Value.Id, pair.Value.ProfileId, PortForwardState.Running))
+            .ToArray();
+        return Task.FromResult(OperationResult<IReadOnlyList<PortForwardStatus>>.Success(statuses));
+    }
 }

@@ -84,6 +84,57 @@ internal sealed class SshNetSftpBrowser : ISftpBrowser
         }
     }
 
+    public async Task<OperationResult> CreateDirectoryAsync(
+        SshProfile profile,
+        ConnectionRoute route,
+        RemotePath path,
+        CancellationToken cancellationToken)
+    {
+        var clientResult = await _clientFactory.CreateConnectedAsync(profile, route, cancellationToken)
+            .ConfigureAwait(false);
+        if (!clientResult.Succeeded || clientResult.Value is null)
+        {
+            return OperationResult.Failure(clientResult.Error!);
+        }
+
+        using var connection = clientResult.Value;
+        try
+        {
+            connection.Client.CreateDirectory(path.Value);
+            return OperationResult.Success();
+        }
+        catch (Exception exception)
+        {
+            return OperationResult.Failure(SshNetErrorMapper.Map(exception));
+        }
+    }
+
+    public async Task<OperationResult> RenameAsync(
+        SshProfile profile,
+        ConnectionRoute route,
+        RemotePath sourcePath,
+        RemotePath targetPath,
+        CancellationToken cancellationToken)
+    {
+        var clientResult = await _clientFactory.CreateConnectedAsync(profile, route, cancellationToken)
+            .ConfigureAwait(false);
+        if (!clientResult.Succeeded || clientResult.Value is null)
+        {
+            return OperationResult.Failure(clientResult.Error!);
+        }
+
+        using var connection = clientResult.Value;
+        try
+        {
+            connection.Client.RenameFile(sourcePath.Value, targetPath.Value);
+            return OperationResult.Success();
+        }
+        catch (Exception exception)
+        {
+            return OperationResult.Failure(SshNetErrorMapper.Map(exception));
+        }
+    }
+
     private static SftpItem ToSftpItem(ISftpFile file)
     {
         return new SftpItem(

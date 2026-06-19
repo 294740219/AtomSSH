@@ -211,24 +211,28 @@ public sealed class SessionModuleTests
     }
 
     [Fact]
-    public void SshNetConnectionInfoFactoryRejectsKeyboardInteractiveUntilPromptSupportExists()
+    public void SshNetConnectionInfoFactoryCreatesKeyboardInteractiveAuthentication()
     {
         var profile = CreateProfile() with { AuthMethod = SshAuthMethod.KeyboardInteractive };
         var credential = new CredentialLease(
             profile.CredentialRef!.Value,
-            new KeyboardInteractiveCredentialMaterial(),
+            new KeyboardInteractiveCredentialMaterial(
+                new Dictionary<string, string>
+                {
+                    ["Password:"] = "secret"
+                },
+                "secret"),
             DateTimeOffset.UtcNow);
         var factory = new SshNetConnectionInfoFactory();
 
         var result = factory.Create(profile, profile.Endpoint, credential);
 
-        Assert.False(result.Succeeded);
-        Assert.Equal(Core.Results.SshErrorKind.Validation, result.Error?.Kind);
-        Assert.Contains("Keyboard-interactive", result.Error!.Summary);
+        Assert.True(result.Succeeded);
+        Assert.Equal("example.internal", result.Value!.Host);
     }
 
     [Fact]
-    public void HostKeyVerifierAcceptsTrustedMatchingHostKey()
+    public async Task HostKeyVerifierAcceptsTrustedMatchingHostKey()
     {
         var endpoint = new SshEndpoint(new HostName("example.internal"), 22);
         var fingerprint = new HostKeyFingerprint("SHA256", "abc");
@@ -241,26 +245,30 @@ public sealed class SessionModuleTests
             DateTimeOffset.UtcNow,
             HostKeyTrustDecision.Trusted)));
 
+        var prepare = await verifier.PrepareAsync(endpoint, CancellationToken.None);
         var result = verifier.Verify(endpoint, "ssh-ed25519", fingerprint);
 
+        Assert.True(prepare.Succeeded);
         Assert.True(result.Succeeded);
     }
 
     [Fact]
-    public void HostKeyVerifierRejectsUnknownHostKey()
+    public async Task HostKeyVerifierRejectsUnknownHostKey()
     {
         var endpoint = new SshEndpoint(new HostName("example.internal"), 22);
         var verifier = new SshNetHostKeyVerifier(new StubHostKeyTrustStore(null));
 
+        var prepare = await verifier.PrepareAsync(endpoint, CancellationToken.None);
         var result = verifier.Verify(endpoint, "ssh-ed25519", new HostKeyFingerprint("SHA256", "abc"));
 
+        Assert.True(prepare.Succeeded);
         Assert.False(result.Succeeded);
         Assert.Equal(SshErrorKind.HostKey, result.Error?.Kind);
         Assert.Contains("unknown", result.Error!.Summary, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void HostKeyVerifierRejectsChangedHostKey()
+    public async Task HostKeyVerifierRejectsChangedHostKey()
     {
         var endpoint = new SshEndpoint(new HostName("example.internal"), 22);
         var verifier = new SshNetHostKeyVerifier(new StubHostKeyTrustStore(new KnownHostEntry(
@@ -272,8 +280,10 @@ public sealed class SessionModuleTests
             DateTimeOffset.UtcNow,
             HostKeyTrustDecision.Trusted)));
 
+        var prepare = await verifier.PrepareAsync(endpoint, CancellationToken.None);
         var result = verifier.Verify(endpoint, "ssh-ed25519", new HostKeyFingerprint("SHA256", "new"));
 
+        Assert.True(prepare.Succeeded);
         Assert.False(result.Succeeded);
         Assert.Equal(SshErrorKind.HostKey, result.Error?.Kind);
         Assert.Contains("changed", result.Error!.Summary, StringComparison.OrdinalIgnoreCase);

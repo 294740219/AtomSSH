@@ -4,11 +4,18 @@ namespace AtomSSH.Core.Credentials;
 
 public sealed record CredentialMetadata(CredentialRef Ref, CredentialKind Kind, string Name);
 
-public sealed record CredentialLease(CredentialRef Ref, CredentialMaterial Material, DateTimeOffset AcquiredAt) : IAsyncDisposable
+public sealed record CredentialLease(
+    CredentialRef Ref,
+    CredentialMaterial Material,
+    DateTimeOffset AcquiredAt,
+    Func<ValueTask>? ReleaseAsync = null) : IAsyncDisposable
 {
     public CredentialKind Kind => Material.Kind;
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public ValueTask DisposeAsync()
+    {
+        return ReleaseAsync?.Invoke() ?? ValueTask.CompletedTask;
+    }
 }
 
 public abstract record CredentialMaterial
@@ -28,7 +35,9 @@ public sealed record PrivateKeyCredentialMaterial(string PrivateKeyPem, string? 
         : CredentialKind.PrivateKeyWithPassphrase;
 }
 
-public sealed record KeyboardInteractiveCredentialMaterial() : CredentialMaterial
+public sealed record KeyboardInteractiveCredentialMaterial(
+    IReadOnlyDictionary<string, string> Responses,
+    string? DefaultResponse = null) : CredentialMaterial
 {
     public override CredentialKind Kind => CredentialKind.KeyboardInteractive;
 }

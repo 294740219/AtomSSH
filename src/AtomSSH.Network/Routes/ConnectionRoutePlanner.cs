@@ -17,8 +17,19 @@ public class ConnectionRoutePlanner : IConnectionRoutePlanner
         _inventory = inventory;
     }
 
-    public async Task<OperationResult<ConnectionRoute>> PlanAsync(SshProfile profile, CancellationToken cancellationToken)
+    public async Task<OperationResult<ConnectionRoute>> PlanAsync(
+        ConnectionRoutePlanningRequest request,
+        CancellationToken cancellationToken)
     {
+        var profile = request.TargetProfile;
+        if (request.PreferredJumpHostProfileId is not null)
+        {
+            return await CreateJumpHostRouteAsync(
+                profile,
+                request.PreferredJumpHostProfileId.Value,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         if (profile.JumpHostProfileId is not null)
         {
             return await CreateJumpHostRouteAsync(
@@ -27,7 +38,9 @@ public class ConnectionRoutePlanner : IConnectionRoutePlanner
                 cancellationToken).ConfigureAwait(false);
         }
 
-        var inventoryRoute = await TryPlanFromInventoryAsync(profile, cancellationToken).ConfigureAwait(false);
+        var inventoryRoute = request.AllowInventoryFallback
+            ? await TryPlanFromInventoryAsync(request, cancellationToken).ConfigureAwait(false)
+            : OperationResult<ConnectionRoute?>.Success(null);
         if (!inventoryRoute.Succeeded || inventoryRoute.Value is not null)
         {
             return inventoryRoute.Succeeded
@@ -44,7 +57,7 @@ public class ConnectionRoutePlanner : IConnectionRoutePlanner
     }
 
     private async Task<OperationResult<ConnectionRoute?>> TryPlanFromInventoryAsync(
-        SshProfile profile,
+        ConnectionRoutePlanningRequest request,
         CancellationToken cancellationToken)
     {
         if (_inventory is null)
@@ -58,7 +71,12 @@ public class ConnectionRoutePlanner : IConnectionRoutePlanner
             return OperationResult<ConnectionRoute?>.Failure(spaces.Error!);
         }
 
-        foreach (var space in spaces.Value!)
+        var candidateSpaces = request.NetworkSpaceId is null
+            ? spaces.Value!
+            : spaces.Value!.Where(space => space.Id == request.NetworkSpaceId.Value).ToArray();
+        var matchedRoutes = new List<ConnectionRoute>();
+
+        foreach (var space in candidateSpaces)
         {
             var nodes = await _inventory.ListNodesAsync(space.Id, cancellationToken).ConfigureAwait(false);
             if (!nodes.Succeeded)
@@ -66,7 +84,7 @@ public class ConnectionRoutePlanner : IConnectionRoutePlanner
                 return OperationResult<ConnectionRoute?>.Failure(nodes.Error!);
             }
 
-            var targetNode = nodes.Value!.FirstOrDefault(node => node.ProfileId == profile.Id);
+            var targetNode = nodes.Value!.FirstOrDefault(node => node.ProfileId == request.TargetProfile.Id);
             if (targetNode is null || targetNode.Role == NetworkNodeRole.JumpHost)
             {
                 continue;
@@ -75,20 +93,31 @@ public class ConnectionRoutePlanner : IConnectionRoutePlanner
             var jumpNode = nodes.Value!.FirstOrDefault(node =>
                 node.Role == NetworkNodeRole.JumpHost
                 && node.ProfileId is not null
-                && node.ProfileId != profile.Id);
+                && node.ProfileId != request.TargetProfile.Id);
             if (jumpNode?.ProfileId is null)
             {
-                return OperationResult<ConnectionRoute?>.Success(null);
+                continue;
             }
 
-            var route = await CreateJumpHostRouteAsync(profile, jumpNode.ProfileId.Value, cancellationToken)
+            var route = await CreateJumpHostRouteAsync(request.TargetProfile, jumpNode.ProfileId.Value, cancellationToken)
                 .ConfigureAwait(false);
-            return route.Succeeded
-                ? OperationResult<ConnectionRoute?>.Success(route.Value)
-                : OperationResult<ConnectionRoute?>.Failure(route.Error!);
+            if (!route.Succeeded)
+            {
+                return OperationResult<ConnectionRoute?>.Failure(route.Error!);
+            }
+
+            matchedRoutes.Add(route.Value!);
         }
 
-        return OperationResult<ConnectionRoute?>.Success(null);
+        return matchedRoutes.Count switch
+        {
+            0 => OperationResult<ConnectionRoute?>.Success(null),
+            1 => OperationResult<ConnectionRoute?>.Success(matchedRoutes[0]),
+            _ => OperationResult<ConnectionRoute?>.Failure(new SshError(
+                SshErrorKind.Validation,
+                "Connection route planning is ambiguous.",
+                "Multiple network spaces contain the target profile. Specify a network space or jump host."))
+        };
     }
 
     private async Task<OperationResult<ConnectionRoute>> CreateJumpHostRouteAsync(

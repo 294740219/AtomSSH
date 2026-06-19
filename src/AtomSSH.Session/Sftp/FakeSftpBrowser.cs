@@ -33,6 +33,25 @@ public sealed class FakeSftpBrowser : ISftpBrowser
         return Task.FromResult(OperationResult.Success());
     }
 
+    public Task<OperationResult> CreateDirectoryAsync(
+        SshProfile profile,
+        ConnectionRoute route,
+        RemotePath path,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult(OperationResult.Success());
+    }
+
+    public Task<OperationResult> RenameAsync(
+        SshProfile profile,
+        ConnectionRoute route,
+        RemotePath sourcePath,
+        RemotePath targetPath,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult(OperationResult.Success());
+    }
+
     private static string Combine(RemotePath path, string name)
     {
         var root = string.IsNullOrWhiteSpace(path.Value) ? "/" : path.Value.TrimEnd('/');

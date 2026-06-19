@@ -12,6 +12,8 @@ namespace AtomSSH.Session.Connections;
 internal sealed class SshNetClientConnector
 {
     private static readonly SshEndpoint LocalForwardEndpoint = new(new("127.0.0.1"), 0);
+    private static readonly TimeSpan DefaultConnectionTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan DefaultKeepAliveInterval = TimeSpan.FromSeconds(30);
 
     private readonly ISshProfileRepository _profiles;
     private readonly ICredentialResolver _credentialResolver;
@@ -61,69 +63,95 @@ internal sealed class SshNetClientConnector
                 route.Target,
                 clientFactory,
                 cancellationToken).ConfigureAwait(false),
-            ConnectionRouteKind.JumpHost => await ConnectViaJumpHostAsync(
+            ConnectionRouteKind.JumpHost or ConnectionRouteKind.ProxyJumpChain => await ConnectViaJumpChainAsync(
                 profile,
                 route,
                 clientFactory,
                 cancellationToken).ConfigureAwait(false),
             _ => OperationResult<SshNetClientConnection<TClient>>.Failure(new SshError(
                 SshErrorKind.Validation,
-                "ProxyJump chain routes are not implemented in the SSH.NET connector yet.",
+                "Unsupported connection route kind.",
                 $"Route kind: {route.Kind}"))
         };
     }
 
-    private async Task<OperationResult<SshNetClientConnection<TClient>>> ConnectViaJumpHostAsync<TClient>(
+    private async Task<OperationResult<SshNetClientConnection<TClient>>> ConnectViaJumpChainAsync<TClient>(
         SshProfile targetProfile,
         ConnectionRoute route,
         Func<ConnectionInfo, TClient> clientFactory,
         CancellationToken cancellationToken)
         where TClient : BaseClient
     {
-        if (route.JumpHosts.Count != 1)
+        if (route.JumpHosts.Count == 0)
         {
             return OperationResult<SshNetClientConnection<TClient>>.Failure(new SshError(
                 SshErrorKind.Validation,
-                "Exactly one jump host is supported by the first jump host connector.",
+                "Jump host route requires at least one jump host.",
                 $"Jump host count: {route.JumpHosts.Count}"));
         }
 
-        var jumpHostRoute = route.JumpHosts[0];
-        var jumpProfile = await _profiles.GetAsync(jumpHostRoute.ProfileId, cancellationToken).ConfigureAwait(false);
-        if (!jumpProfile.Succeeded || jumpProfile.Value is null)
-        {
-            return OperationResult<SshNetClientConnection<TClient>>.Failure(jumpProfile.Error ?? new SshError(
-                SshErrorKind.Validation,
-                "Jump host profile was not found.",
-                jumpHostRoute.ProfileId.Value.ToString()));
-        }
-
-        var jumpClientResult = await ConnectDirectAsync(
-            jumpProfile.Value,
-            jumpHostRoute.Endpoint,
-            jumpHostRoute.Endpoint,
-            info => new SshClient(info),
-            cancellationToken).ConfigureAwait(false);
-        if (!jumpClientResult.Succeeded || jumpClientResult.Value is null)
-        {
-            return OperationResult<SshNetClientConnection<TClient>>.Failure(jumpClientResult.Error!);
-        }
-
-        var jumpConnection = jumpClientResult.Value;
-        ForwardedPortLocal? forwardedPort = null;
+        var disposables = new List<IDisposable>();
+        SshNetClientConnection<SshClient>? currentJumpConnection = null;
+        var ownershipTransferred = false;
         try
         {
-            forwardedPort = new ForwardedPortLocal(
-                LocalForwardEndpoint.Host.Value,
-                (uint)LocalForwardEndpoint.Port,
-                route.Target.Host.Value,
-                (uint)route.Target.Port);
-            jumpConnection.Client.AddForwardedPort(forwardedPort);
-            forwardedPort.Start();
+            foreach (var jumpHostRoute in route.JumpHosts)
+            {
+                var jumpProfile = await _profiles.GetAsync(jumpHostRoute.ProfileId, cancellationToken).ConfigureAwait(false);
+                if (!jumpProfile.Succeeded || jumpProfile.Value is null)
+                {
+                    return OperationResult<SshNetClientConnection<TClient>>.Failure(jumpProfile.Error ?? new SshError(
+                        SshErrorKind.Validation,
+                        "Jump host profile was not found.",
+                        jumpHostRoute.ProfileId.Value.ToString()));
+                }
 
+                OperationResult<SshNetClientConnection<SshClient>> jumpClientResult;
+                if (currentJumpConnection is null)
+                {
+                    jumpClientResult = await ConnectDirectAsync(
+                        jumpProfile.Value,
+                        jumpHostRoute.Endpoint,
+                        jumpHostRoute.Endpoint,
+                        info => new SshClient(info),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var nextJumpPort = CreateStartedForward(currentJumpConnection.Client, jumpHostRoute.Endpoint);
+                    disposables.Add(nextJumpPort);
+                    var nextJumpLoopbackEndpoint = new SshEndpoint(
+                        LocalForwardEndpoint.Host,
+                        checked((int)nextJumpPort.BoundPort));
+                    jumpClientResult = await ConnectDirectAsync(
+                        jumpProfile.Value,
+                        nextJumpLoopbackEndpoint,
+                        jumpHostRoute.Endpoint,
+                        info => new SshClient(info),
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                if (!jumpClientResult.Succeeded || jumpClientResult.Value is null)
+                {
+                    return OperationResult<SshNetClientConnection<TClient>>.Failure(jumpClientResult.Error!);
+                }
+
+                currentJumpConnection = jumpClientResult.Value;
+                disposables.Add(currentJumpConnection);
+            }
+
+            if (currentJumpConnection is null)
+            {
+                return OperationResult<SshNetClientConnection<TClient>>.Failure(new SshError(
+                    SshErrorKind.Internal,
+                    "Jump host chain did not produce a connection."));
+            }
+
+            var targetForward = CreateStartedForward(currentJumpConnection.Client, route.Target);
+            disposables.Add(targetForward);
             var loopbackEndpoint = new SshEndpoint(
                 LocalForwardEndpoint.Host,
-                checked((int)forwardedPort.BoundPort));
+                checked((int)targetForward.BoundPort));
             var targetResult = await ConnectDirectAsync(
                 targetProfile,
                 loopbackEndpoint,
@@ -132,20 +160,24 @@ internal sealed class SshNetClientConnector
                 cancellationToken).ConfigureAwait(false);
             if (!targetResult.Succeeded || targetResult.Value is null)
             {
-                forwardedPort.Dispose();
-                jumpConnection.Dispose();
                 return OperationResult<SshNetClientConnection<TClient>>.Failure(targetResult.Error!);
             }
 
+            ownershipTransferred = true;
             return OperationResult<SshNetClientConnection<TClient>>.Success(new SshNetClientConnection<TClient>(
                 targetResult.Value.Client,
-                [jumpConnection, forwardedPort]));
+                disposables));
         }
         catch (Exception exception)
         {
-            forwardedPort?.Dispose();
-            jumpConnection.Dispose();
             return OperationResult<SshNetClientConnection<TClient>>.Failure(SshNetErrorMapper.Map(exception));
+        }
+        finally
+        {
+            if (!ownershipTransferred)
+            {
+                DisposeAll(disposables);
+            }
         }
     }
 
@@ -178,12 +210,22 @@ internal sealed class SshNetClientConnector
             return OperationResult<SshNetClientConnection<TClient>>.Failure(connectionInfoResult.Error!);
         }
 
+        connectionInfoResult.Value.Timeout = DefaultConnectionTimeout;
+
         TClient? client = null;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var prepareHostKey = await _hostKeyVerifier.PrepareAsync(hostKeyEndpoint, cancellationToken)
+                .ConfigureAwait(false);
+            if (!prepareHostKey.Succeeded)
+            {
+                return OperationResult<SshNetClientConnection<TClient>>.Failure(prepareHostKey.Error!);
+            }
+
             client = clientFactory(connectionInfoResult.Value);
+            client.KeepAliveInterval = DefaultKeepAliveInterval;
             client.HostKeyReceived += (_, args) => _hostKeyVerifier.Verify(hostKeyEndpoint, args);
             client.Connect();
 
@@ -198,6 +240,26 @@ internal sealed class SshNetClientConnector
         {
             client?.Dispose();
             return OperationResult<SshNetClientConnection<TClient>>.Failure(SshNetErrorMapper.Map(exception));
+        }
+    }
+
+    private static ForwardedPortLocal CreateStartedForward(SshClient client, SshEndpoint target)
+    {
+        var forwardedPort = new ForwardedPortLocal(
+            LocalForwardEndpoint.Host.Value,
+            (uint)LocalForwardEndpoint.Port,
+            target.Host.Value,
+            (uint)target.Port);
+        client.AddForwardedPort(forwardedPort);
+        forwardedPort.Start();
+        return forwardedPort;
+    }
+
+    private static void DisposeAll(IEnumerable<IDisposable> disposables)
+    {
+        foreach (var disposable in disposables.Reverse())
+        {
+            disposable.Dispose();
         }
     }
 }

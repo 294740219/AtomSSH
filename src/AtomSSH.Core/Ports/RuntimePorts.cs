@@ -21,6 +21,10 @@ public interface ISshSessionRuntime
 
     Task<OperationResult<ITerminalChannel>> GetTerminalChannelAsync(SshSessionInstanceId sessionId, CancellationToken cancellationToken);
 
+    Task<OperationResult<SshSessionSnapshot>> GetSnapshotAsync(SshSessionInstanceId sessionId, CancellationToken cancellationToken);
+
+    Task<OperationResult<IReadOnlyList<SshSessionSnapshot>>> ListSnapshotsAsync(CancellationToken cancellationToken);
+
     Task<OperationResult> CloseAsync(SshSessionInstanceId sessionId, CancellationToken cancellationToken);
 }
 
@@ -44,7 +48,11 @@ public interface ISftpBrowser
 {
     Task<OperationResult<IReadOnlyList<SftpItem>>> ListAsync(SshProfile profile, ConnectionRoute route, RemotePath path, CancellationToken cancellationToken);
 
+    Task<OperationResult> CreateDirectoryAsync(SshProfile profile, ConnectionRoute route, RemotePath path, CancellationToken cancellationToken);
+
     Task<OperationResult> DeleteAsync(SshProfile profile, ConnectionRoute route, RemotePath path, CancellationToken cancellationToken);
+
+    Task<OperationResult> RenameAsync(SshProfile profile, ConnectionRoute route, RemotePath sourcePath, RemotePath targetPath, CancellationToken cancellationToken);
 }
 
 public interface ISftpFileTransfer
@@ -90,12 +98,14 @@ public interface IPortForwardRuntime
 {
     Task<OperationResult<PortForwardInstanceId>> StartAsync(PortForwardProfile profile, ConnectionRoute route, CancellationToken cancellationToken);
 
+    Task<OperationResult<IReadOnlyList<PortForwardStatus>>> ListAsync(CancellationToken cancellationToken);
+
     Task<OperationResult> StopAsync(PortForwardInstanceId instanceId, CancellationToken cancellationToken);
 }
 
 public interface IConnectionRoutePlanner
 {
-    Task<OperationResult<ConnectionRoute>> PlanAsync(SshProfile profile, CancellationToken cancellationToken);
+    Task<OperationResult<ConnectionRoute>> PlanAsync(ConnectionRoutePlanningRequest request, CancellationToken cancellationToken);
 }
 
 public interface INetworkDiagnosticsService
@@ -108,6 +118,10 @@ public interface ITransferTaskScheduler
     Task<OperationResult> SubmitAsync(SftpTransferTask task, TransferExecutionPlan executionPlan, CancellationToken cancellationToken);
 
     Task<OperationResult> SubmitAsync(RemoteCopyTask task, TransferExecutionPlan executionPlan, CancellationToken cancellationToken);
+
+    Task<OperationResult> RetryAsync(SftpTransferTask task, TransferExecutionPlan executionPlan, CancellationToken cancellationToken);
+
+    Task<OperationResult> RetryAsync(RemoteCopyTask task, TransferExecutionPlan executionPlan, CancellationToken cancellationToken);
 
     Task<OperationResult> CancelAsync(TransferTaskId taskId, CancellationToken cancellationToken);
 }

@@ -1,23 +1,83 @@
 using System.Text.Json;
+using System.Collections.Concurrent;
 using AtomSSH.Core.Results;
 
 namespace AtomSSH.Infrastructure.Storage;
 
 internal sealed class JsonFileStore<T>
 {
+    private const int CurrentSchemaVersion = 1;
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> Gates = new(StringComparer.OrdinalIgnoreCase);
+
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.General)
     {
         WriteIndented = true
     };
 
     private readonly string _filePath;
+    private readonly SemaphoreSlim _gate;
 
     public JsonFileStore(string filePath)
     {
-        _filePath = filePath;
+        _filePath = Path.GetFullPath(filePath);
+        _gate = Gates.GetOrAdd(_filePath, _ => new SemaphoreSlim(1, 1));
     }
 
     public async Task<OperationResult<T>> ReadAsync(T defaultValue, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await ReadUnlockedAsync(defaultValue, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<OperationResult> WriteAsync(T value, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await WriteUnlockedAsync(value, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<OperationResult> UpdateAsync(
+        T defaultValue,
+        Func<T, OperationResult<T>> update,
+        CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var current = await ReadUnlockedAsync(defaultValue, cancellationToken).ConfigureAwait(false);
+            if (!current.Succeeded)
+            {
+                return OperationResult.Failure(current.Error!);
+            }
+
+            var updated = update(current.Value!);
+            if (!updated.Succeeded)
+            {
+                return OperationResult.Failure(updated.Error!);
+            }
+
+            return await WriteUnlockedAsync(updated.Value!, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task<OperationResult<T>> ReadUnlockedAsync(T defaultValue, CancellationToken cancellationToken)
     {
         try
         {
@@ -27,10 +87,22 @@ internal sealed class JsonFileStore<T>
             }
 
             await using var stream = File.OpenRead(_filePath);
-            var value = await JsonSerializer.DeserializeAsync<T>(stream, SerializerOptions, cancellationToken)
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
-            return OperationResult<T>.Success(value ?? defaultValue);
+            JsonElement dataElement;
+            if (document.RootElement.ValueKind == JsonValueKind.Object
+                && (document.RootElement.TryGetProperty("schemaVersion", out _)
+                    || document.RootElement.TryGetProperty("SchemaVersion", out _))
+                && (document.RootElement.TryGetProperty("data", out dataElement)
+                    || document.RootElement.TryGetProperty("Data", out dataElement)))
+            {
+                var enveloped = dataElement.Deserialize<T>(SerializerOptions);
+                return OperationResult<T>.Success(enveloped ?? defaultValue);
+            }
+
+            var legacy = document.RootElement.Deserialize<T>(SerializerOptions);
+            return OperationResult<T>.Success(legacy ?? defaultValue);
         }
         catch (JsonException exception)
         {
@@ -48,7 +120,7 @@ internal sealed class JsonFileStore<T>
         }
     }
 
-    public async Task<OperationResult> WriteAsync(T value, CancellationToken cancellationToken)
+    private async Task<OperationResult> WriteUnlockedAsync(T value, CancellationToken cancellationToken)
     {
         try
         {
@@ -61,7 +133,11 @@ internal sealed class JsonFileStore<T>
             var tempPath = _filePath + ".tmp";
             await using (var stream = File.Create(tempPath))
             {
-                await JsonSerializer.SerializeAsync(stream, value, SerializerOptions, cancellationToken)
+                await JsonSerializer.SerializeAsync(
+                        stream,
+                        new JsonFileEnvelope<T>(CurrentSchemaVersion, value),
+                        SerializerOptions,
+                        cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -76,4 +152,6 @@ internal sealed class JsonFileStore<T>
                 $"{_filePath}: {exception.Message}"));
         }
     }
+
+    private sealed record JsonFileEnvelope<TData>(int SchemaVersion, TData Data);
 }

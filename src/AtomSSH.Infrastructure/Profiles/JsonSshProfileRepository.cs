@@ -34,36 +34,35 @@ public sealed class JsonSshProfileRepository : ISshProfileRepository
 
     public async Task<OperationResult> SaveAsync(SshProfile profile, CancellationToken cancellationToken)
     {
-        var list = await ReadProfilesAsync(cancellationToken).ConfigureAwait(false);
-        if (!list.Succeeded)
-        {
-            return OperationResult.Failure(list.Error!);
-        }
+        return await _store.UpdateAsync(
+            new List<SshProfile>(),
+            profiles =>
+            {
+                var existingIndex = profiles.FindIndex(item => item.Id == profile.Id);
+                if (existingIndex >= 0)
+                {
+                    profiles[existingIndex] = profile;
+                }
+                else
+                {
+                    profiles.Add(profile);
+                }
 
-        var profiles = list.Value!;
-        var existingIndex = profiles.FindIndex(item => item.Id == profile.Id);
-        if (existingIndex >= 0)
-        {
-            profiles[existingIndex] = profile;
-        }
-        else
-        {
-            profiles.Add(profile);
-        }
-
-        return await _store.WriteAsync(profiles, cancellationToken).ConfigureAwait(false);
+                return OperationResult<List<SshProfile>>.Success(profiles);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<OperationResult> DeleteAsync(SshProfileId id, CancellationToken cancellationToken)
     {
-        var list = await ReadProfilesAsync(cancellationToken).ConfigureAwait(false);
-        if (!list.Succeeded)
-        {
-            return OperationResult.Failure(list.Error!);
-        }
-
-        list.Value!.RemoveAll(profile => profile.Id == id);
-        return await _store.WriteAsync(list.Value!, cancellationToken).ConfigureAwait(false);
+        return await _store.UpdateAsync(
+            new List<SshProfile>(),
+            profiles =>
+            {
+                profiles.RemoveAll(profile => profile.Id == id);
+                return OperationResult<List<SshProfile>>.Success(profiles);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     private Task<OperationResult<List<SshProfile>>> ReadProfilesAsync(CancellationToken cancellationToken)

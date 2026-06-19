@@ -41,6 +41,25 @@ public sealed class CommandSnippetAppService
         return _snippets.SaveAsync(snippet, cancellationToken);
     }
 
+    public async Task<OperationResult> DeleteAsync(CommandSnippetId id, CancellationToken cancellationToken)
+    {
+        var snippets = await _snippets.ListAsync(cancellationToken).ConfigureAwait(false);
+        if (!snippets.Succeeded)
+        {
+            return OperationResult.Failure(SshErrorRedactor.Redact(snippets.Error!));
+        }
+
+        if (snippets.Value!.All(snippet => snippet.Id != id))
+        {
+            return OperationResult.Failure(new SshError(
+                SshErrorKind.Validation,
+                "Command snippet was not found.",
+                id.Value.ToString()));
+        }
+
+        return await _snippets.DeleteAsync(id, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<OperationResult> SendAsync(
         CommandSnippetId snippetId,
         SshSessionInstanceId sessionId,

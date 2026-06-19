@@ -32,13 +32,16 @@ public sealed class TcpNetworkDiagnosticsService : INetworkDiagnosticsService
             }
         }
 
-        var targetResult = await CheckEndpointAsync(
-            route.Target,
-            "SSH target is not reachable.",
-            cancellationToken).ConfigureAwait(false);
-        if (targetResult is not null)
+        if (route.Kind == ConnectionRouteKind.Direct)
         {
-            errors.Add(targetResult);
+            var targetResult = await CheckEndpointAsync(
+                route.Target,
+                "SSH target is not reachable.",
+                cancellationToken).ConfigureAwait(false);
+            if (targetResult is not null)
+            {
+                errors.Add(targetResult);
+            }
         }
 
         return OperationResult<NetworkDiagnosticResult>.Success(new NetworkDiagnosticResult(route, errors));

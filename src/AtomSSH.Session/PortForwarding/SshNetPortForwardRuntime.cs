@@ -61,7 +61,7 @@ internal sealed class SshNetPortForwardRuntime : IPortForwardRuntime
             forwardedPort.Start();
 
             var instanceId = PortForwardInstanceId.New();
-            if (!_instances.TryAdd(instanceId, new RuntimePortForwardInstance(connection, forwardedPort)))
+            if (!_instances.TryAdd(instanceId, new RuntimePortForwardInstance(profile.Id, profile.ProfileId, connection, forwardedPort)))
             {
                 forwardedPort.Dispose();
                 connection.Dispose();
@@ -95,6 +95,14 @@ internal sealed class SshNetPortForwardRuntime : IPortForwardRuntime
         {
             return Task.FromResult(OperationResult.Failure(SshNetErrorMapper.Map(exception)));
         }
+    }
+
+    public Task<OperationResult<IReadOnlyList<PortForwardStatus>>> ListAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<PortForwardStatus> statuses = _instances
+            .Select(pair => pair.Value.ToStatus(pair.Key))
+            .ToArray();
+        return Task.FromResult(OperationResult<IReadOnlyList<PortForwardStatus>>.Success(statuses));
     }
 
     private static OperationResult<ForwardedPort> CreateForwardedPort(PortForwardProfile profile)
@@ -153,16 +161,33 @@ internal sealed class SshNetPortForwardRuntime : IPortForwardRuntime
     private sealed class RuntimePortForwardInstance : IDisposable
     {
         public RuntimePortForwardInstance(
+            Guid portForwardProfileId,
+            SshProfileId profileId,
             SshNetClientConnection<SshClient> connection,
             ForwardedPort forwardedPort)
         {
+            PortForwardProfileId = portForwardProfileId;
+            ProfileId = profileId;
             Connection = connection;
             ForwardedPort = forwardedPort;
         }
 
+        private Guid PortForwardProfileId { get; }
+
+        private SshProfileId ProfileId { get; }
+
         private SshNetClientConnection<SshClient> Connection { get; }
 
         private ForwardedPort ForwardedPort { get; }
+
+        public PortForwardStatus ToStatus(PortForwardInstanceId instanceId)
+        {
+            var state = ForwardedPort.IsStarted
+                ? PortForwardState.Running
+                : PortForwardState.Stopped;
+
+            return new PortForwardStatus(instanceId, PortForwardProfileId, ProfileId, state);
+        }
 
         public void Dispose()
         {

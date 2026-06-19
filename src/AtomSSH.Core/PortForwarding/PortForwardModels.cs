@@ -16,7 +16,8 @@ public sealed record PortForwardEndpoint(string Host, int Port);
 
 public sealed record PortForwardStatus(
     PortForwardInstanceId InstanceId,
-    Guid ProfileId,
+    Guid PortForwardProfileId,
+    SshProfileId ProfileId,
     PortForwardState State,
     SshError? LastError = null);
 

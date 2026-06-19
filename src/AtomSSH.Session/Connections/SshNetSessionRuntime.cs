@@ -66,7 +66,7 @@ internal sealed class SshNetSessionRuntime : ISshSessionRuntime, ISshSessionFact
                     0,
                     4096);
                 var terminalChannel = new SshNetTerminalChannel(sessionId, shellStream);
-                var state = new SshNetSessionState(connection, terminalChannel);
+                var state = new SshNetSessionState(profile.Id, connection, terminalChannel);
 
                 if (!_sessions.TryAdd(sessionId, state))
                 {
@@ -106,6 +106,26 @@ internal sealed class SshNetSessionRuntime : ISshSessionRuntime, ISshSessionFact
                 sessionId.Value.ToString())));
     }
 
+    public Task<OperationResult<SshSessionSnapshot>> GetSnapshotAsync(
+        SshSessionInstanceId sessionId,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult(_sessions.TryGetValue(sessionId, out var state)
+            ? OperationResult<SshSessionSnapshot>.Success(state.ToSnapshot(sessionId))
+            : OperationResult<SshSessionSnapshot>.Failure(new SshError(
+                SshErrorKind.Validation,
+                "SSH session was not found.",
+                sessionId.Value.ToString())));
+    }
+
+    public Task<OperationResult<IReadOnlyList<SshSessionSnapshot>>> ListSnapshotsAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<SshSessionSnapshot> snapshots = _sessions
+            .Select(pair => pair.Value.ToSnapshot(pair.Key))
+            .ToArray();
+        return Task.FromResult(OperationResult<IReadOnlyList<SshSessionSnapshot>>.Success(snapshots));
+    }
+
     public Task<OperationResult> CloseAsync(SshSessionInstanceId sessionId, CancellationToken cancellationToken)
     {
         if (!_sessions.TryRemove(sessionId, out var state))
@@ -127,16 +147,29 @@ internal sealed class SshNetSessionRuntime : ISshSessionRuntime, ISshSessionFact
     private sealed class SshNetSessionState : IDisposable
     {
         public SshNetSessionState(
+            SshProfileId profileId,
             SshNetClientConnection<SshClient> connection,
             SshNetTerminalChannel terminalChannel)
         {
+            ProfileId = profileId;
             Connection = connection;
             TerminalChannel = terminalChannel;
         }
 
+        private SshProfileId ProfileId { get; }
+
         public SshNetClientConnection<SshClient> Connection { get; }
 
         public SshNetTerminalChannel TerminalChannel { get; }
+
+        public SshSessionSnapshot ToSnapshot(SshSessionInstanceId sessionId)
+        {
+            var state = Connection.Client.IsConnected
+                ? SshSessionState.Connected
+                : SshSessionState.Disconnected;
+
+            return new SshSessionSnapshot(sessionId, ProfileId, state);
+        }
 
         public void Dispose()
         {

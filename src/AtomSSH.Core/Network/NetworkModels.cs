@@ -24,6 +24,12 @@ public sealed record JumpHostRoute(SshProfileId ProfileId, SshEndpoint Endpoint)
 
 public sealed record ProxyJumpChain(IReadOnlyList<JumpHostRoute> Hops);
 
+public sealed record ConnectionRoutePlanningRequest(
+    SshProfile TargetProfile,
+    Guid? NetworkSpaceId = null,
+    SshProfileId? PreferredJumpHostProfileId = null,
+    bool AllowInventoryFallback = true);
+
 public sealed record NetworkReachabilitySnapshot(NetworkNodeId NodeId, bool IsReachable, SshError? Error);
 
 public sealed record NetworkDiagnosticResult(ConnectionRoute? Route, IReadOnlyList<SshError> Errors);

@@ -25,11 +25,6 @@ internal sealed class SshNetSftpFileTransfer : ISftpFileTransfer
         TransferOverwritePolicy overwritePolicy,
         CancellationToken cancellationToken)
     {
-        if (overwritePolicy == TransferOverwritePolicy.Rename)
-        {
-            return UnsupportedRenamePolicy();
-        }
-
         var fileInfo = new FileInfo(localPath.Value);
         if (!fileInfo.Exists)
         {
@@ -50,13 +45,16 @@ internal sealed class SshNetSftpFileTransfer : ISftpFileTransfer
         var client = connection.Client;
         try
         {
-            var remoteExists = client.Exists(remotePath.Value);
+            var finalRemotePath = overwritePolicy == TransferOverwritePolicy.Rename
+                ? CreateUniqueRemotePath(client.Exists, remotePath.Value)
+                : remotePath.Value;
+            var remoteExists = client.Exists(finalRemotePath);
             if (remoteExists && overwritePolicy == TransferOverwritePolicy.FailIfExists)
             {
                 return OperationResult<long>.Failure(new SshError(
                     SshErrorKind.Path,
                     "Remote file already exists.",
-                    remotePath.Value));
+                    finalRemotePath));
             }
 
             await using var stream = new FileStream(
@@ -66,7 +64,9 @@ internal sealed class SshNetSftpFileTransfer : ISftpFileTransfer
                 FileShare.Read,
                 bufferSize: 81920,
                 useAsync: true);
-            client.UploadFile(stream, remotePath.Value, canOverride: overwritePolicy == TransferOverwritePolicy.Overwrite);
+            await using var remoteStream = client.OpenWrite(finalRemotePath);
+            await stream.CopyToAsync(remoteStream, cancellationToken).ConfigureAwait(false);
+            await remoteStream.FlushAsync(cancellationToken).ConfigureAwait(false);
 
             return OperationResult<long>.Success(fileInfo.Length);
         }
@@ -84,11 +84,6 @@ internal sealed class SshNetSftpFileTransfer : ISftpFileTransfer
         TransferOverwritePolicy overwritePolicy,
         CancellationToken cancellationToken)
     {
-        if (overwritePolicy == TransferOverwritePolicy.Rename)
-        {
-            return UnsupportedRenamePolicy();
-        }
-
         if (File.Exists(localPath.Value) && overwritePolicy == TransferOverwritePolicy.FailIfExists)
         {
             return OperationResult<long>.Failure(new SshError(
@@ -108,25 +103,31 @@ internal sealed class SshNetSftpFileTransfer : ISftpFileTransfer
         var client = connection.Client;
         try
         {
-            var directory = Path.GetDirectoryName(localPath.Value);
+            var finalLocalPath = overwritePolicy == TransferOverwritePolicy.Rename
+                ? CreateUniqueLocalPath(localPath.Value)
+                : localPath.Value;
+            var directory = Path.GetDirectoryName(finalLocalPath);
             if (!string.IsNullOrWhiteSpace(directory))
             {
                 Directory.CreateDirectory(directory);
             }
 
+            var attributes = client.GetAttributes(remotePath.Value);
             var mode = overwritePolicy == TransferOverwritePolicy.Overwrite
                 ? FileMode.Create
                 : FileMode.CreateNew;
             await using var stream = new FileStream(
-                localPath.Value,
+                finalLocalPath,
                 mode,
                 FileAccess.Write,
                 FileShare.None,
                 bufferSize: 81920,
                 useAsync: true);
-            client.DownloadFile(remotePath.Value, stream);
+            await using var remoteStream = client.OpenRead(remotePath.Value);
+            await remoteStream.CopyToAsync(stream, cancellationToken).ConfigureAwait(false);
+            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
 
-            return OperationResult<long>.Success(stream.Length);
+            return OperationResult<long>.Success(attributes.Size);
         }
         catch (Exception exception)
         {
@@ -169,13 +170,6 @@ internal sealed class SshNetSftpFileTransfer : ISftpFileTransfer
         TransferOverwritePolicy overwritePolicy,
         CancellationToken cancellationToken)
     {
-        if (overwritePolicy == TransferOverwritePolicy.Rename)
-        {
-            return OperationResult<ISftpFileStreamLease>.Failure(new SshError(
-                SshErrorKind.Validation,
-                "Rename overwrite policy is not implemented for SFTP transfer yet."));
-        }
-
         var clientResult = await _clientFactory.CreateConnectedAsync(profile, route, cancellationToken)
             .ConfigureAwait(false);
         if (!clientResult.Succeeded || clientResult.Value is null)
@@ -186,17 +180,21 @@ internal sealed class SshNetSftpFileTransfer : ISftpFileTransfer
         var connection = clientResult.Value;
         try
         {
-            if (connection.Client.Exists(remotePath.Value)
+            var finalRemotePath = overwritePolicy == TransferOverwritePolicy.Rename
+                ? CreateUniqueRemotePath(connection.Client.Exists, remotePath.Value)
+                : remotePath.Value;
+
+            if (connection.Client.Exists(finalRemotePath)
                 && overwritePolicy == TransferOverwritePolicy.FailIfExists)
             {
                 connection.Dispose();
                 return OperationResult<ISftpFileStreamLease>.Failure(new SshError(
                     SshErrorKind.Path,
                     "Remote file already exists.",
-                    remotePath.Value));
+                    finalRemotePath));
             }
 
-            var stream = connection.Client.OpenWrite(remotePath.Value);
+            var stream = connection.Client.OpenWrite(finalRemotePath);
             return OperationResult<ISftpFileStreamLease>.Success(
                 new SshNetSftpFileStreamLease(connection, stream, null));
         }
@@ -207,10 +205,54 @@ internal sealed class SshNetSftpFileTransfer : ISftpFileTransfer
         }
     }
 
-    private static OperationResult<long> UnsupportedRenamePolicy()
+    private static string CreateUniqueLocalPath(string path)
     {
-        return OperationResult<long>.Failure(new SshError(
-            SshErrorKind.Validation,
-            "Rename overwrite policy is not implemented for SFTP transfer yet."));
+        if (!File.Exists(path))
+        {
+            return path;
+        }
+
+        var directory = Path.GetDirectoryName(path);
+        var name = Path.GetFileNameWithoutExtension(path);
+        var extension = Path.GetExtension(path);
+        for (var index = 1; index < 10_000; index++)
+        {
+            var candidate = Path.Combine(directory ?? string.Empty, $"{name} ({index}){extension}");
+            if (!File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new IOException($"Could not create a unique local path for {path}.");
+    }
+
+    private static string CreateUniqueRemotePath(Func<string, bool> exists, string path)
+    {
+        if (!exists(path))
+        {
+            return path;
+        }
+
+        var slashIndex = path.LastIndexOf('/');
+        var directory = slashIndex >= 0 ? path[..slashIndex] : string.Empty;
+        var fileName = slashIndex >= 0 ? path[(slashIndex + 1)..] : path;
+        var dotIndex = fileName.LastIndexOf('.');
+        var name = dotIndex > 0 ? fileName[..dotIndex] : fileName;
+        var extension = dotIndex > 0 ? fileName[dotIndex..] : string.Empty;
+
+        for (var index = 1; index < 10_000; index++)
+        {
+            var candidateName = $"{name} ({index}){extension}";
+            var candidate = string.IsNullOrEmpty(directory)
+                ? candidateName
+                : $"{directory}/{candidateName}";
+            if (!exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new IOException($"Could not create a unique remote path for {path}.");
     }
 }

@@ -39,6 +39,10 @@ public interface IHostKeyTrustStore
 
 public interface ITransferTaskStore
 {
+    Task<OperationResult<IReadOnlyList<SftpTransferTask>>> ListSftpAsync(CancellationToken cancellationToken);
+
+    Task<OperationResult<IReadOnlyList<RemoteCopyTask>>> ListRemoteCopyAsync(CancellationToken cancellationToken);
+
     Task<OperationResult> SaveAsync(SftpTransferTask task, CancellationToken cancellationToken);
 
     Task<OperationResult> SaveAsync(RemoteCopyTask task, CancellationToken cancellationToken);
@@ -60,6 +64,10 @@ public interface INetworkInventoryStore
     Task<OperationResult> SaveSpaceAsync(NetworkSpace space, CancellationToken cancellationToken);
 
     Task<OperationResult> SaveNodeAsync(NetworkNode node, CancellationToken cancellationToken);
+
+    Task<OperationResult> DeleteSpaceAsync(Guid networkSpaceId, CancellationToken cancellationToken);
+
+    Task<OperationResult> DeleteNodeAsync(NetworkNodeId nodeId, CancellationToken cancellationToken);
 }
 
 public interface ICommandSnippetRepository
@@ -67,6 +75,8 @@ public interface ICommandSnippetRepository
     Task<OperationResult<IReadOnlyList<CommandSnippet>>> ListAsync(CancellationToken cancellationToken);
 
     Task<OperationResult> SaveAsync(CommandSnippet snippet, CancellationToken cancellationToken);
+
+    Task<OperationResult> DeleteAsync(CommandSnippetId id, CancellationToken cancellationToken);
 }
 
 public interface IPortForwardProfileRepository
@@ -74,6 +84,8 @@ public interface IPortForwardProfileRepository
     Task<OperationResult<IReadOnlyList<PortForwardProfile>>> ListAsync(CancellationToken cancellationToken);
 
     Task<OperationResult> SaveAsync(PortForwardProfile profile, CancellationToken cancellationToken);
+
+    Task<OperationResult> DeleteAsync(Guid id, CancellationToken cancellationToken);
 }
 
 public interface ICredentialStore
@@ -90,4 +102,9 @@ public interface IImportExportService
     Task<OperationResult<ImportExportPackage>> ExportAsync(CancellationToken cancellationToken);
 
     Task<OperationResult<IReadOnlyList<ImportConflict>>> PreviewImportAsync(ImportExportPackage package, CancellationToken cancellationToken);
+
+    Task<OperationResult<ImportResult>> ImportAsync(
+        ImportExportPackage package,
+        ImportOptions options,
+        CancellationToken cancellationToken);
 }

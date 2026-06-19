@@ -192,6 +192,23 @@ public sealed class TransferModuleTests
             && progress.TotalBytes == fileTransfer.ReadBytes.Length);
     }
 
+    [Fact]
+    public async Task SftpTransferSchedulerRejectsCancelForTaskThatIsNotRunning()
+    {
+        var profile = CreateProfile();
+        var stateStore = new InMemoryTransferStateStore();
+        var scheduler = new SftpTransferTaskScheduler(
+            new StubProfileRepository(profile),
+            new StubSftpFileTransfer(0),
+            stateStore);
+
+        var result = await scheduler.CancelAsync(TransferTaskId.New(), CancellationToken.None);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(SshErrorKind.Validation, result.Error?.Kind);
+        Assert.Empty(stateStore.Progress);
+    }
+
     private static SftpTransferTask CreateTask(SshProfileId profileId, TransferDirection direction)
     {
         return new SftpTransferTask(

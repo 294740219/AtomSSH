@@ -49,9 +49,8 @@ internal sealed class SshNetConnectionInfoFactory : ISshNetConnectionInfoFactory
             PasswordCredentialMaterial password => OperationResult<AuthenticationMethod>.Success(
                 new PasswordAuthenticationMethod(profile.UserName, password.Password)),
             PrivateKeyCredentialMaterial privateKey => CreatePrivateKeyAuthentication(profile, privateKey),
-            KeyboardInteractiveCredentialMaterial => OperationResult<AuthenticationMethod>.Failure(new SshError(
-                SshErrorKind.Validation,
-                "Keyboard-interactive SSH authentication requires prompt response support and is not enabled yet.")),
+            KeyboardInteractiveCredentialMaterial keyboardInteractive => OperationResult<AuthenticationMethod>.Success(
+                CreateKeyboardInteractiveAuthentication(profile, keyboardInteractive)),
             AgentCredentialMaterial => OperationResult<AuthenticationMethod>.Failure(new SshError(
                 SshErrorKind.Validation,
                 "SSH agent authentication requires agent integration and is not enabled yet.")),
@@ -102,5 +101,30 @@ internal sealed class SshNetConnectionInfoFactory : ISshNetConnectionInfoFactory
                 "SSH private key could not be loaded.",
                 exception.Message)));
         }
+    }
+
+    private static KeyboardInteractiveAuthenticationMethod CreateKeyboardInteractiveAuthentication(
+        SshProfile profile,
+        KeyboardInteractiveCredentialMaterial material)
+    {
+        var authentication = new KeyboardInteractiveAuthenticationMethod(profile.UserName);
+        authentication.AuthenticationPrompt += (_, args) =>
+        {
+            foreach (var prompt in args.Prompts)
+            {
+                if (material.Responses.TryGetValue(prompt.Request, out var response))
+                {
+                    prompt.Response = response;
+                    continue;
+                }
+
+                if (material.DefaultResponse is not null)
+                {
+                    prompt.Response = material.DefaultResponse;
+                }
+            }
+        };
+
+        return authentication;
     }
 }
